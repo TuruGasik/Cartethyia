@@ -34,8 +34,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
 - Summarize Start Plan badges as one name plus the extra-plan count, and show
   grant/period headings without duplicating the model list. Preserve original
   upstream names in titles and keep future quota windows visible.
-- Refresh ZCode Start generation, quota and gift client headers to 3.17.2
-  without changing the captured Messages prompt.
+- Refresh ZCode Start quota and gift client headers to 3.17.2 while keeping
+  generation identity 3.14.5 paired with its captured Messages prompt.
 - Reject ZCode Start business-error envelopes returned with HTTP 200 instead
   of decoding them as successful empty completions.
 - Remove the ZCode Claim gifts action from quota cards; keep manual claims

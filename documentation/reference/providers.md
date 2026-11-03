@@ -218,8 +218,9 @@ with full upstream names in the badge title. Window headings show grant and
 period without a model caption. Known names are displayed as **Start**
 and **Global Build**; other promo/referral names remain unchanged. Stored quota
 and routing identities are not renamed. Future windows stay visible.
-Start Plan generation, quota and gift requests use ZCode client identity 3.17.2;
-the bundled three-block prompt retains its original captured text.
+Start Plan generation uses ZCode identity 3.14.5 paired with the captured
+three-block prompt. Quota and gift requests use app identity 3.17.2 separately;
+updating billing identity does not update the generation prompt/version pair.
 Timeout, network and unreadable-JSON quota failures remain distinct; a timeout
 does not advance the account failure streak.
 A successful balance is authoritative: a model with no matching grant is not
