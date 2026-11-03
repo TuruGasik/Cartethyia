@@ -40,6 +40,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
   of decoding them as successful empty completions.
 - Remove the ZCode Claim gifts action from quota cards; keep manual claims
   available in provider account details.
+- Hide model captions on quota cards while preserving model-scoped routing data.
 
 ## [2.7.5] - 2026-11-03
 

@@ -215,7 +215,7 @@ but cannot fund requests. Expired grants cannot fund requests even if their
 last reported remaining amount was positive. Missing usage is unknown, not zero.
 The dashboard summarizes multiple Start Plan grants as **Start +N** (no popup),
 with full upstream names in the badge title. Window headings show grant and
-period; model IDs stay on their own line. Known names are displayed as **Start**
+period without a model caption. Known names are displayed as **Start**
 and **Global Build**; other promo/referral names remain unchanged. Stored quota
 and routing identities are not renamed. Future windows stay visible.
 Start Plan generation, quota and gift requests use ZCode client identity 3.17.2;

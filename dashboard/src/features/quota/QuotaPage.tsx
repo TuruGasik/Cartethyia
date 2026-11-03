@@ -579,7 +579,6 @@ function QuotaCard({
               return (
                 <div key={`${window.kind ?? window.label}:${window.startsAt}:${index}`} className="flex flex-col gap-2 text-badge">
                   <span title={window.label} className="break-words font-semibold text-text-primary">{formatQuotaWindowLabel(window.label, quota.source, window.modelIds)}</span>
-                  {window.modelIds?.length ? <span className="text-text-secondary">Models: {window.modelIds.join(", ")}</span> : null}
                   <span className="text-text-tertiary">{state === "expired" ? "Expired" : `Not started yet · Starts ${new Date(window.startsAt!).toLocaleString()}`}</span>
                 </div>
               );
@@ -616,9 +615,6 @@ function QuotaCard({
                   <span title={window.label} className="break-words text-badge font-semibold text-text-primary">
                     {label}
                   </span>
-                  {window.modelIds?.length ? (
-                    <div className="text-micro text-text-tertiary">Models: {window.modelIds.join(", ")}</div>
-                  ) : null}
                 </div>
                 <div
                   className="quota-bar-track quota-window-bar min-w-0 w-full h-5 rounded-tiny bg-inner-border overflow-hidden max-small:col-span-full max-small:row-start-2"

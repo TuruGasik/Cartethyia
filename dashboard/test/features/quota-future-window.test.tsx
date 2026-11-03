@@ -35,7 +35,6 @@ test("future grants show their start without a usable meter or enabling the acco
   try {
     expect(view.text()).toContain("Not started yet");
     expect(view.text()).toContain(new Date(startsAt).toLocaleString());
-    expect(view.text()).toContain("Models: glm-5.3");
     expect(view.find('[role="progressbar"]')).toBeNull();
     const available = [...view.container.querySelectorAll("button")].find((button) => button.textContent?.includes("Turn on Available"));
     expect(available).toBeDefined();
