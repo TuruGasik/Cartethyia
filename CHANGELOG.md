@@ -36,6 +36,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
   upstream names in titles and keep future quota windows visible.
 - Refresh ZCode Start generation, quota and gift client headers to 3.17.2
   without changing the captured Messages prompt.
+- Reject ZCode Start business-error envelopes returned with HTTP 200 instead
+  of decoding them as successful empty completions.
 
 ## [2.7.5] - 2026-11-03
 

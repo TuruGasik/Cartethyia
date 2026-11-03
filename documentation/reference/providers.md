@@ -226,6 +226,8 @@ A successful balance is authoritative: a model with no matching grant is not
 eligible. Dashboard availability follows the same grant lifetimes and treats
 same-model grants as alternatives, rather than showing a spent sibling as an
 account-wide zero balance.
+Generation business-error envelopes are failures even when the upstream HTTP
+status is 200; they must not produce successful empty completions.
 
 The **Claim gifts** button in Quota Management or the provider account row is an
 explicit manual action. It reads marketing banners and billing preview, then
