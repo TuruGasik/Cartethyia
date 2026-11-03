@@ -37,7 +37,6 @@ test("future grants show their start without a usable meter or enabling the acco
     expect(view.text()).toContain(new Date(startsAt).toLocaleString());
     expect(view.text()).toContain("Models: glm-5.3");
     expect(view.find('[role="progressbar"]')).toBeNull();
-    expect(view.find('button[aria-label="Claim gifts for Future account"]')).not.toBeNull();
     const available = [...view.container.querySelectorAll("button")].find((button) => button.textContent?.includes("Turn on Available"));
     expect(available).toBeDefined();
     await view.act(() => available!.click());

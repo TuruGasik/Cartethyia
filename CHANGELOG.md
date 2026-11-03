@@ -38,6 +38,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
   without changing the captured Messages prompt.
 - Reject ZCode Start business-error envelopes returned with HTTP 200 instead
   of decoding them as successful empty completions.
+- Remove the ZCode Claim gifts action from quota cards; keep manual claims
+  available in provider account details.
 
 ## [2.7.5] - 2026-11-03
 

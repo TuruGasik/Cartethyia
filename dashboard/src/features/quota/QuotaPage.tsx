@@ -24,7 +24,6 @@ import { StatePanel, EmptyState, LoadingState, ErrorState } from "../../componen
 import { ProviderIcon } from "../../components/ProviderIcon";
 import { ConfirmDialog } from "../../components/ConfirmDialog";
 import { HealthEventsModal } from "../../components/HealthEventsModal";
-import { ClaimGiftsButton } from "../../components/ClaimGiftsButton";
 import { Select } from "../../components/ui/select";
 
 import { Stack } from "../../components/ui/stack";
@@ -448,9 +447,6 @@ function QuotaCard({
           )}
         </div>
         <div className="flex items-center gap-1.75 gap-3 ml-auto">
-          {account.provider === "zcode-start" && (
-            <ClaimGiftsButton accountId={account.id} accountName={account.name} />
-          )}
           {canReset && (
             <Button
               variant="ghost"

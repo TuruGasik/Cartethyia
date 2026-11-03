@@ -229,8 +229,8 @@ account-wide zero balance.
 Generation business-error envelopes are failures even when the upstream HTTP
 status is 200; they must not produce successful empty completions.
 
-The **Claim gifts** button in Quota Management or the provider account row is an
-explicit manual action. It reads marketing banners and billing preview, then
+The **Claim gifts** button in the provider account row is an explicit manual
+action; quota cards do not expose gift claims. It reads marketing banners and billing preview, then
 posts each offered `plan_id` to `/api/v1/zcode-plan/billing/claim`. Claim codes
 `0`, `1003`, and `3007` mean claimed, already claimed, and CAPTCHA respectively.
 Complete CAPTCHA in the ZCode app. Unknown/unreadable replies are failures;
