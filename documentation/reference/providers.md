@@ -213,9 +213,15 @@ Alternative grants can fund the same model; a spent grant cannot disable an
 unrelated model. Future grants show **Not started yet** and their start time,
 but cannot fund requests. Expired grants cannot fund requests even if their
 last reported remaining amount was positive. Missing usage is unknown, not zero.
-Built-in Start Plan windows use the short **Start** label; referral/promo grant
-names remain as reported upstream. Timeout, network and unreadable-JSON quota
-failures remain distinct; a timeout does not advance the account failure streak.
+The dashboard summarizes multiple Start Plan grants as **Start +N** (no popup),
+with full upstream names in the badge title. Window headings show grant and
+period; model IDs stay on their own line. Known names are displayed as **Start**
+and **Global Build**; other promo/referral names remain unchanged. Stored quota
+and routing identities are not renamed. Future windows stay visible.
+Start Plan generation, quota and gift requests use ZCode client identity 3.17.2;
+the bundled three-block prompt retains its original captured text.
+Timeout, network and unreadable-JSON quota failures remain distinct; a timeout
+does not advance the account failure streak.
 A successful balance is authoritative: a model with no matching grant is not
 eligible. Dashboard availability follows the same grant lifetimes and treats
 same-model grants as alternatives, rather than showing a spent sibling as an

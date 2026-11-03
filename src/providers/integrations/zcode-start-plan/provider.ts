@@ -22,7 +22,7 @@ export const ZCODE_START_PLAN_ENDPOINT_PATH = "/v1/messages" as const;
 export const ZCODE_START_PLAN_BASE_URL = "https://zcode.z.ai/api/v1/zcode-plan/anthropic" as const;
 
 /** Client version the plan endpoint expects in the identity headers. */
-const APP_VERSION = "3.14.5";
+const APP_VERSION = "3.17.2";
 
 type Loose = Record<string, unknown>;
 type TextBlock = { type: "text"; text: string; cache_control?: { type: "ephemeral" } };
