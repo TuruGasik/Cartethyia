@@ -154,7 +154,7 @@ describe("Start Plan presentation", () => {
     expect(formatQuotaPlanLabel("Go, Team", "commandcode")).toBe("Go, Team");
   });
 
-  test("removes only a model already shown in the model list and preserves unknown grants", () => {
+  test("removes matching model prefixes and preserves unknown grants", () => {
     expect(formatQuotaWindowLabel("GLM-5.3-Flash · ZCODE GLOBAL BUILD · one-time", "zcode-start", ["glm-5.3-flash"])).toBe("Global Build · One-time");
     expect(formatQuotaWindowLabel("GLM-5.3-Trial · ZCode Start Plan · daily", "zcode-start", ["glm-5.3"])).toBe("Start · Daily");
     expect(formatQuotaWindowLabel("GLM-5.3 · Custom PROMO · daily", "zcode-start", ["glm-5.3-flash"])).toBe("GLM-5.3 · Custom PROMO · Daily");

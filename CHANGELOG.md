@@ -8,15 +8,44 @@ current baseline; an existing one applies the numbered files that followed it.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/).
 
-## [Unreleased]
+## [2.7.6] - 2026-11-04
 
 ### Added
+
+- **CLI tools streamlined to four supported CLIs.** The console's CLI tools
+  registry is trimmed to Claude Code, Codex, Kilo, and OpenCode (the removed
+  tools were guide-only and had no real injector). Each tool gained a SDK
+  picker (OpenAI Compatible, OpenAI Responses, Anthropic Messages, Gemini),
+  multi-select model picker that appends to the config, a semi-flat config
+  preview, and a YOLO mode toggle (default on). Applying a config preserves
+  existing provider entries and backs up the previous file with a `.bak`.
+- **Dialog unsaved-change protection is now reusable.** Forms register their
+  dirty state through `useDialogDirty`; the dialog then blocks backdrop
+  clicks, the close control, and Escape while edits are unsaved, shakes the
+  panel, and warns. API-key forms and the preset editor use it.
+- **The inject-system-prompt dialog auto-saves.** Every dropdown/toggle/text
+  change persists immediately; the Save changes button is gone.
 
 - ZCode Start Plan as a separate `zcode-start` provider with device sign-in,
   JWT import, model-scoped quota grants and activation/expiry times. Manual
   gift claims distinguish claimed, already-claimed, CAPTCHA, partial and failed
   outcomes. Daily automatic claims are off unless explicitly enabled with
   `CARTETHYIA_ZCODE_AUTO_CLAIM=true` and skip disabled/cooling accounts.
+- **Qoder claim300 Pro-Trial device/login scripts.** `scripts/provider-probing/qoder`
+  gains a device-flow login (UMID-backed, mirroring the desktop IDE's claim
+  flow) and a URL-only helper for fresh Google SSO accounts, plus PAT minting
+  and the research breakdown of the farm injector / UMID packaging.
+- **GitHub Copilot wire mode switch.** `opencode-copilot` is the default wire
+  for Copilot accounts, with `vscode-client-real` opt-in (matching the real
+  VS Code extension transport).
+- **Telemetry records degenerate stops.** A short output ended by `stop`
+  (rather than `length`/`tool_calls`) is now recorded as a degenerate stop, so
+  truncation-like completions are visible in telemetry instead of being
+  indistinguishable from normal stops.
+- **Research and probe tooling.** Qoder IDE 1.38 unpack (Inno 6.4 via
+  innoextract 1.13) with dynamic-endpoint wire, Copilot wire audit, OpenCode vs
+  Copilot wire comparison, Antigravity wire verification, and backend probes
+  (`scripts/provider-probing/…`) for the live surfaces.
 
 ### Fixed
 
@@ -31,16 +60,72 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
   automatic pass drains eligible accounts across bounded pages.
 - Built-in Start Plan quota windows use the short Start label while preserving
   referral grant names. Quota timeout, network and JSON failures stay distinct.
-- Summarize Start Plan badges as one name plus the extra-plan count, and show
-  grant/period headings without duplicating the model list. Preserve original
-  upstream names in titles and keep future quota windows visible.
-- Refresh ZCode Start quota and gift client headers to 3.17.2 while keeping
-  generation identity 3.14.5 paired with its captured Messages prompt.
 - Reject ZCode Start business-error envelopes returned with HTTP 200 instead
   of decoding them as successful empty completions.
-- Remove the ZCode Claim gifts action from quota cards; keep manual claims
-  available in provider account details.
-- Hide model captions on quota cards while preserving model-scoped routing data.
+- Summarize Start Plan badges as one name plus the extra-plan count and show
+  grant/period headings without model captions. Preserve upstream names in
+  titles and keep future quota windows visible. Manual gift claims remain in
+  provider account details rather than quota cards.
+  *(contributed by @TuruGasik in PR #13)*
+- **Qoder tool-call arguments are stitched even when continuation chunks echo
+  an empty `id`.** Some Qoder roster slots (`qfmodel`/`qmodel_latest`)
+  re-identify every continuation fragment with `id: ""` (the first chunk
+  carries the real call id). The translator treated the empty string as a
+  fresh call id, so every argument fragment was buffered under `""` and lost —
+  the call was emitted with empty arguments. An empty `id` now behaves like a
+  missing one, so fragments re-join the pinned first-seen id per wire index
+  (regression tests in `test/providers/integrations/qoder-continuation-args.test.ts`).
+- **Qoder IDE requests ship the toolset.** The modern IDE surface
+  (`/model/v1/chat/completions`) now includes `tools` in the body; without it
+  the upstream sees no toolset and answers with a DSML text block (or claims
+  no tool exists) instead of structured `tool_calls`.
+- **Qoder DSML fuzzy dialect is dropped entirely.** The protocol-level
+  DSML-injection path is gone; tool calling is structured-only, so no text
+  fragment can be misread as a tool call.
+- **Qoder bubbles reasoning effort for non-reasoning models and declares 1M
+  context.** Non-reasoning models no longer carry `reasoningEffort`, and the
+  IDE request declares the full 1M window.
+- **GitHub Copilot not-licensed is a ban, not a cooldown.** A `not-licensed`
+  verdict now disables the account (no cooldown), so it stops being re-dialled
+  repeatedly.
+- **GitHub Copilot reasoning separator keeps a space.** The chat surface writes
+  a space before the reasoning block instead of a blank line, matching the
+  reference output.
+- **Free-tier models ignore the operator's usage-floor threshold.** A model the
+  provider marks free is exempt from the usage-floor cutoff (free tier lands on
+  any account regardless of credit balance).
+- **`service_tier` is forwarded only to providers that support it.** Providers
+  without the field no longer receive a stale/unknown tier.
+- **Dashboard model test/lab use the catalog output limit.** The model-test and
+  lab screens no longer apply a hard cap independent of the model's catalog
+  output limit.
+- **Vision handoff bounds the context it passes.** The trailing conversation
+  carried to the vision model is bounded by the vision model's window instead
+  of the whole session.
+- **Dashboard shows banned share keys and persists provider display mode.** The
+  share-keys list surfaces banned keys, and the provider grid/display selection
+  persists across sessions.
+- **Cached input and share-family budgets are normalized.** Usage accounting
+  normalizes cached input tokens and share-family budget keys so they compare
+  correctly across request shapes.
+- **Provider cache split is preserved; local rejections stop cooling accounts;
+  BYOK base-URL root is fixed; the providers list paginates.** The per-account
+  cache split no longer collapses, local (client-side) rejections no longer
+  cool accounts, a pasted BYOK endpoint resolves to its root for discovery, and
+  the providers list has a working pagination toggle.
+- **Combos/aliases grid, share-template lifetime totals, and admission bucket
+  key.** The combos/aliases page uses a 2-column grid and fixes the Select
+  `asChild` warning; share template lifetime totals render correctly; the
+  admission bucket is keyed by the right scope.
+- **Antigravity system prompt generalized.** The adapter no longer assumes a
+  single fixed wording; the reference wording is preserved in a comment.
+- **Antigravity quota windows no longer fabricate credit pairs.** Fractional
+  allowance windows report a percentage without inventing a used/limit pair,
+  and per-model windows are skipped when the summary endpoint already covers
+  the family (rendering both doubled every row an operator saw).
+- **Usage floor shows the lowest independent window.** When an account has no
+  pooled balance, the usage floor shows the lowest independent window's
+  remaining percentage instead of claiming zero credits.
 
 ## [2.7.5] - 2026-11-03
 
