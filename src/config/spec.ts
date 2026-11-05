@@ -89,11 +89,12 @@ export const CONFIG_SPEC = {
   CARTETHYIA_API_KEY: { kind: "optional-text" },
   CARTETHYIA_SERVER_MAX_BODY_BYTES: {
     kind: "int",
-    // A 500K-token context is roughly 2 MB of text, so 4 MB admits every real
-    // request while halving the worst-case hold. How many may be in flight is
-    // admission's job, so an operator with larger payloads raises this and
-    // sets the ceiling in Settings.
-    default: 4 * 1024 * 1024,
+    // A 1M-token context is roughly 4+ MB of text (Qoder gRPC/legacy paths
+    // accept it), so 16 MB admits every real request while bounding the
+    // worst-case hold. How many may be in flight is admission's job, so an
+    // operator with even larger payloads raises this and sets the ceiling in
+    // Settings.
+    default: 16 * 1024 * 1024,
     min: 1024,
     max: Number.MAX_SAFE_INTEGER,
   },
@@ -171,6 +172,12 @@ export const CONFIG_SPEC = {
    * heaviest sweeps here instead of carrying one flag per task.
    */
   CARTETHYIA_DISABLED_TASKS: { kind: "list" },
+
+  /**
+   * Force the Qoder UMID bridge to the mini-ELF bundle on Linux
+   * (`1` = always mini, `0` = never mini; absent = auto-detect containers).
+   */
+  CARTETHYIA_QODER_UMID_MINI: { kind: "int", default: 0, min: 0, max: 1 },
 
   /**
    * How long a day's telemetry is kept, in days.
@@ -269,7 +276,7 @@ export const CONFIG_SPEC = {
   CARTETHYIA_PROXY_MAX_FREE_SOCKETS: { kind: "int", default: 20, min: 0, max: 100_000 },
 
   // Security (encryption key, public origin, abuse ceiling)
-  IP_RATE_MAX_PER_WINDOW: { kind: "int", default: 240, min: 1, max: Number.MAX_SAFE_INTEGER },
+  IP_RATE_MAX_PER_WINDOW: { kind: "int", default: 540, min: 1, max: Number.MAX_SAFE_INTEGER },
   CARTETHYIA_ENCRYPTION_KEY: {
     kind: "required",
     error:

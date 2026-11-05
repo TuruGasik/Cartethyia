@@ -20,6 +20,243 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
 - Format ZCode quota headings as package name plus lowercase period in
   parentheses, without model names, for example `Start (daily)` and
   `Referral Weekend (one-time)`.
+- **Qoder: provider request/response capture now shows the gRPC chat call,
+  not the PAT exchange.** The payload-capture wrapper only saw HTTP `fetch`
+  calls, and Qoder's production chat transport is gRPC — so Request Detail's
+  Provider Request / Provider Response panels showed the PAT → job-token
+  exchange body (`center.qoder.sh/api/v1/jobToken/exchange`) for PAT accounts
+  and nothing at all for OAuth device-token accounts. The gRPC adapter now
+  fills the capture sink directly: the translated request line (grpc method,
+  host, allowlisted metadata, body) and a stream summary (chunk count, echoed
+  model, usage, stop reason, status). Credential headers (`authorization`,
+  `cosy-machinetoken`) are excluded, matching the HTTP capture allowlist.
+- **Antigravity: tool schemas with `anyOf`/`oneOf`/multi-type are flattened
+  before dispatch.** The upstream (Claude-route) validates tool schemas as
+  strict JSON Schema draft 2020-12 and rejects *every* `anyOf` / `oneOf` /
+  multi-type `type: [...]` declaration — even a degenerate `anyOf` of two
+  identical string schemas — with `tools.N.custom.input_schema: JSON schema
+  is invalid`, failing the whole request. Tools declaring unions (e.g. OMP's
+  `task` tool's `model` field) now ship the most permissive single type
+  (string when a choice is a string), recursively through `properties` and
+  `items`.
+- **Qoder: prompt-cache hits are now estimated locally.** The upstream never
+  reports cache hits (verified live on gRPC and IDE HTTP: `cached_tokens`
+  absent, usage absent after terminal). Qoder now uses the shared session-cache
+  estimator the Trae and Kiro adapters use: the longest previously-sent
+  message prefix in the session counts as cached. The gRPC surface also had
+  to carry upstream usage on the terminal event (the upstream streams `usage`
+  in a trailing chunk after the finish reason, which the old code dropped) —
+  this restores usage telemetry and powers the estimate. Chat/Responses/
+  Messages surfaces all read `cached_input_tokens`, so the estimate shows up
+  everywhere usage does.
+
+## [2.7.8] - 2026-11-05
+
+### Fixed
+
+- **BYOK custom providers: operator-selected wire is the contract.** A custom
+  provider created with "Chat completions" previously also advertised
+  `responses` (the OpenAI wire pair default), so discovery reclassified
+  gpt-5/gpt-6 ids onto `/v1/responses` — even when the upstream only serves
+  chat — and the model test timed out. `resolveByokWireProfile` now serves
+  exactly the selected family (`chat` → chat only, `responses` → responses
+  only, `messages` → messages only). VPS installs that selected chat were
+  unaffected; local installs whose model was re-fetched as responses were not.
+- **Qoder gRPC stream: no usage after terminal.** The gRPC surface yielded
+  `usage` *after* the terminal event, which the strict Anthropic Messages
+  encoder rejected — the gateway then emitted a `transport_unavailable` error
+  frame after `message_stop`, so Anthropic clients saw "upstream closed the
+  stream before it finished" and retried in a loop. `usage` is now emitted
+  before finish only (the terminal carries usage itself). Chat and Responses
+  surfaces were unaffected.
+- **Auth surfaces: 16px input font to stop iOS auto-zoom.** Login/setup
+  inputs inherited the 13px compact body token; iOS Safari auto-zooms into
+  any focused input under 16px, which read as the page zooming itself while
+  typing. `.auth-form-inner .form-input` now forces 16px.
+
+## [2.7.7] - 2026-11-05
+
+### Added
+
+- **Qoder tool-call stitching fix (gRPC) — single + paralel.** Tool calls
+  streamed via `model.chat.ChatService` now splice correctly: continuation
+  fragments (`id: ""`) attach to the current announced call instead of getting
+  a fresh fallback id — upstream sends `index: 0` for every parallel call, so
+  index-based pinning misattributed arguments between calls. Verified live via
+  opencode → CarteLocal: single shell call and multi-call parallel blocks
+  (`echo parallel-A` + `echo parallel-B`) both execute with full arguments
+  (previously `Invalid arguments ... Missing key` and glued JSON
+  `{"command":"..."}{"command":"..."}`). Regression tests in
+  `test/providers/integrations/qoder-grpc-wire.test.ts`. Documented in
+  `documentation/research/qoder/live/2026-11-05-qoder-tool-calling.md` §6.
+- **Qoder adapter restructured into focused modules.** `qoder.ts` is now a
+  re-export barrel over `qoder-auth` (PAT→job-token exchange v1), `qoder-cosy`
+  (COSY signing), `qoder-chat` (legacy builder/transport), `qoder-ide`
+  (probe-only surface), and `qoder-adapter` (transport selection + surface
+  contract). Public imports unchanged.
+- **Qoder User-Agent aligned to live captures.** CLI/COSY/device flow now use
+  `Bun/1.4.2`, the IDE surface `Bun/1.4.4`, the job-token exchange
+  `qoder/<version>` (was `Go-http-client/2.0`), and the openapi/business
+  surface `Qoder`/`QoderWork`.
+- **Qoder PAT→jobToken exchange moved to the v1 endpoint.** intl now uses
+  `POST center.qoder.sh/api/v1/jobToken/exchange` with a plain JSON body
+  `{personal_token, machine_id}` and uppercase `X-Request-ID` (was the v3
+  scrambled-COSY endpoint). `userId` falls back to the machine id (v1 does not
+  return it) — sufficient for Bearer surfaces; COSY signing uses it as the
+  identity placeholder.
+- **Qoder machine identity headers from the real runtime.** `qoderMachineHeaders`
+  now reports `cosy-machineos`/`cosy-machinehostname` from the actual platform
+  (was hardcoded `x86_64_linux`/`DESKTOP-QODER`); COSY chat headers include the
+  machine id set. gRPC version metadata is no longer hardcoded (follows
+  `getQoderVersion()`), and `X-Session-ID` is consistent across transports
+  (`sha256(userId:model)`).
+
+### Changed
+
+- **Qoder gRPC `tool_choice=required` is omitted.** The gRPC surface rejects
+  it with 400/406/422 on most models (verified in the live 150/150 matrix);
+  the neutral prompt carries the intent instead. `auto`/named choices are still
+  sent.
+
+### Added
+
+- **Qoder gRPC transport as the default billed surface.** The gateway now
+  dispatches Qoder chat through `model.chat.ChatService/ChatCompletionStream`
+  — the only proven carrier of real 1M-token context (the HTTP IDE surface
+  caps at ~256 KiB). The proto is embedded as a generated TS source, so it
+  works from source, dist, and the standalone binary. Free-tier rows (`lite`)
+  keep routing to the legacy COSY surface, which serves them without credits.
+- **Antigravity & Codex web search.** `antigravity/gemini-2.5-flash` and
+  `codex/gpt-5.6-luna` are registered as `websearch` routes. The Gemini/CCA
+  `googleSearch` hosted tool is now emitted for `web_search` tool requests —
+  upstream answers with real grounding chunks (previously empty).
+- **OpenCode websearch plugin injection.** The OpenCode injector writes a
+  `plugins/<provider>-websearch.js` plugin that routes OpenCode's websearch
+  tool through the gateway's `/v1/search`, reading the provider block from
+  opencode.jsonc as the single source of truth; apply writes it, reset removes
+  it, and the provider key follows the selected websearch provider name.
+- **Higher server body ceiling.** `CARTETHYIA_SERVER_MAX_BODY_BYTES` defaults
+  to 16 MB so a 1M-token request fits the gateway's own ingress.
+- **Qoder probe reports the real serving model metadata.** Provider tests for
+  Qoder default to the modern `/model/v1` surface, whose `raw_usage` names the
+  model that actually served the turn (`provider_model`, `supply_model`,
+  `target`, …) — the production transports (gRPC/COSY) echo only opaque roster
+  keys. Test Model now shows e.g. `qwen3.7-plus` / `bailian-qwen3.7-plus-free-260401`
+  instead of the roster key, and a probe can still pin a specific surface via
+  the `surface` override.
+- **Qoder cmodel probe prompt workaround.** The gRPC surface refuses one
+  roster row (`cmodel` / Cantus) with an upstream 406 when probed with the
+  identity prompt; its probe uses `halo gpt` instead — a greeting that
+  *asserts* the wrong identity, which the upstream guardrail allows (it only
+  blocks identity *questions*), and the model corrects it on its own
+  (*"saya Claude, asisten AI buatan Anthropic"*). Verified consistent 3/3
+  live probes. Other models and providers are unaffected.
+- **Qoder probe metadata research.** `documentation/research/qoder/2026-11-04-qoder-probe-provider-metadata.md`
+  captures the IDE surface's `raw_usage` provider metadata for every roster key
+  (real supply model, region, target) — verified live across multiple probes.
+  Documents that `raw_usage` is intermittent (re-probe to capture), that slots
+  like `fast`/`performance` rotate their backing model, and that routed
+  profiles (`ultimate`, `smodel`, `cantus`, `performance`) expose
+  `supply_account` / `supply_region`.
+- **Qoder credit usage in the Requests table.** COSY terminal frames report
+  `credits`; they are now normalized into `credit_used`, so Qoder requests
+  show their credit spend (Coins column) like buddy already did.
+- **Qoder daily-credits claim revalidated with the real UMID.** The daily
+  CREDITS campaign is now `act-20261102-503` (was `act-20261027-489`). A
+  claim with the **real Windows UMID** (`vendor/qoder-umid/umidpack/runtime-info.exe`)
+  succeeded (`CLAIMED` +100, ALL_MODELS, 30 days) on an account that was
+  previously same-person blocked on the old campaign — `addOnQuota` went 100 →
+  200. Confirmed the CREDITS campaign only surfaces with the genuine UMID
+  headers (generated identity keeps it hidden) and that the sash API host is
+  `openapi.qoder.sh` (not `qoder.com`), with response shape
+  `{ showCampaign, claimable, campaigns }` and claim by `campaignId` UUID.
+  Documented in `documentation/research/qoder/2026-10-29-qoder-credits-claims-identity.md`
+  (Part F).
+- **Qoder UMID bridge fallback via the vendored mini-ELF.** When the native
+  vendored ELF is absent (slim Docker containers), `qoder-umid.ts` now
+  extracts `vendor/qoder-umid/qoder-umid-mini.tar.gz` (static glibc bundle) to
+  `$XDG_CACHE_HOME/cartethyia/umid-mini` and runs it with the staged
+  `LD_LIBRARY_PATH` — so containers get a genuine UMID instead of falling back
+  to the generated identity. Bridge priority: native ELF/Mach-O → mini-ELF →
+  WSL/PE (Windows) → generated.
+- **Manual Qoder credits claim in the console.** New `POST /accounts/:id/claim-qoder-credits`
+  endpoint (mirrors ZCode's `claim-gifts`) mints/binds a native UMID, lists
+  the sash campaigns with UMID headers, and claims the CREDITS
+  `CLAIM_BENEFIT` campaign by `campaignId`. The provider-detail account row
+  gets a "Claim credits" button for qoder/qodercn accounts. Result states:
+  claimed / already_claimed / nothing / error; quota cache/snapshot invalidated
+  on a successful grant. PAT (`pt-…`) accounts are exchanged to a job token
+  first — the exchange now binds the machine identity (`machine_id` +
+  `machine_token`) like the real client, and the platform machine id
+  (`%APPDATA%/Qoder/cache/machine_token.json`) is used in the Cosy headers, so
+  the request matches the signature the server expects.
+- **Qoder probe tooling reorganized and deduplicated.** The 22 probe scripts
+  under `scripts/provider-probing/qoder/` were consolidated to 13: one
+  canonical chat probe (`chat/probe-qoder.ts`) absorbs the transport,
+  response-shape, cross-model, business-header, legacy-reply, and lite-1M
+  probes via flags (`--surface`, `--model-echo`, `--cross`, `--headers`,
+  `--lite`); entitlement/roster/account-info merge into
+  `quota/qoder-entitlement-probe.ts` (`--header-mode`, `--full`, `--roster-key`);
+  gRPC meta absorbs the modelname probe (`--echo-only`); context and
+  session-retention merge into `chat/qoder-capacity-probe.ts` (`--mode`).
+  New shared helpers `lib/shared.ts` (machine identity, headers, body
+  builders, SSE reader, account loader, redacting printer) and
+  `lib/grpc.ts` (gRPC client factory) eliminate the duplicated code — no
+  `any` casts, one version constant, verified typecheck and runtime.
+- **Custom User-Agent override in Routing Strategy.** The Client identity box
+  now has a free-text custom User-Agent input that overrides the provider's
+  native identity (persisted to new `provider_routing_settings.custom_user_agent`
+  — migration `0043`). Empty uses the native identity (shown as the default);
+  "Reset" clears the override. Dispatch applies the custom value even when the
+  provider would otherwise stamp its own header. Routing only sees it when
+  set — otherwise native/route identity applies. The Advanced section
+  (collapsed by default) keeps the per-proxy max inflight control and locks
+  the Client identity box while open.
+
+### Fixed
+
+- **Qoder roster: only `lite` is free.** `qfmodel` is billed — upstream's live
+  `is_free` flag for it is a plan-tier marker, not a zero-cost tier (a free
+  account gets `quota exceeded` 116). The static roster no longer marks it
+  free; live discovery still honors upstream's own flag.
+- **Qoder probe reports the upstream model echo.** The gRPC surface has no
+  HTTP body for `readReportedModel`, so provider Test Model returned no
+  `reportedModel` for Qoder. The adapter now emits a `response_start` event
+  with the echoed model, and the probe falls back to reading it from the
+  canonical events — Test Model now shows the real model the upstream ran
+  (e.g. `smodel` → `azure-gpt6-astra`).
+- **Qoder gRPC proto path on Windows.** The proto is materialized from the
+  embedded source (no `file:` URL path issues), fixing `no such file or
+  directory` at runtime.
+- **Quota and usage floor no longer exclude accounts from routing.** The
+  router previously dropped candidates whose quota window was exhausted or
+  below the configured floor (`quota_exhausted`), which could make a model
+  unreachable even when the operator wanted it tried — including free-tier
+  models and Qoder `qwen3.8-flash`. Quota is now an ordering-only signal
+  (`creditPriority`): exhausted/below-floor accounts stay eligible and are
+  ordered behind unknown/positive accounts, and the upstream is the one that
+  answers (its refusal is then classified into a cooldown as before). Removed
+  `belowUsageFloor`/`earliestWindowResetMs` and the floor branch from
+  `EligibilityEvaluator`; updated docs (`04-usage-floor.md`, architecture) and
+  routing tests accordingly.
+- **Per-IP abuse ceiling tuned to 540 requests/minute.** The default
+  `IP_RATE_MAX_PER_WINDOW` and the service fallback were 240 requests per
+  60 s window (4 RPS/IP), which internal/gateway-originated traffic could hit
+  and lock out legitimate requests with `rate_limited` 429. Raised to 540
+  (9 RPS/IP); ban threshold follows (1080). `.env.example`,
+  `documentation/reference/configuration.md`, and comments updated. API keys
+  remain unlimited by default (`requestsPerMinute` null when unset).
+- **Qoder UMID mini-ELF preferred in containers.** `qoder-umid.ts` now
+  detects containers (`/.dockerenv`, `/.containerenv`, or cgroup matches) and
+  uses the `qoder-umid-mini.tar.gz` bundle (static glibc, mints `isVm:false`)
+  instead of the native ELF, so a containerized deployment is not flagged as a
+  VM. `CARTETHYIA_QODER_UMID_MINI=1` forces mini on any Linux host; `=0`
+  disables the auto-detection. Non-container Linux hosts keep the native ELF.
+- **Test runner parallelism capped.** `scripts/test/run.ts` now passes
+  `--parallel=<n>` where `n = min(availableParallelism(), 4)` (override with
+  `CARTETHYIA_TEST_JOBS`), so the suite no longer pins every core (Bun 1.4+
+  defaults to all CPUs). Verified: 16-core host runs at 4x PARALLEL; env
+  override honored.
 
 ## [2.7.6] - 2026-11-04
 
@@ -319,12 +556,13 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
   normalized to the IDE's header-safe form, and the COSY version pins the IDE's
   `1.1.80` (not the newer CLI's).
 - **Qoder browser-session PAT claimer.** New probe
-  `scripts/provider-probing/qoder/qoder-browser-pat-claimer.ts` lists, creates,
-  and revokes Personal Access Tokens (`pt-…`) from the Qoder web console using
-  an exported browser session cookie (Netscape cookies.txt). It handles the
+  `scripts/provider-probing/qoder/qoder-browser-pat-claimer.ts` (removed in the
+  2.7.7 probe-tooling reorg — browser/cookie tooling retired) listed, created,
+  and revoked Personal Access Tokens (`pt-…`) from the Qoder web console using
+  an exported browser session cookie (Netscape cookies.txt). It handled the
   console's CSRF double-submit pair (`window.csrfToken` + the
-  `qoder_csrf_token` cookie), caps expiry at the console's 1-year maximum, and
-  writes the minted PAT only to `--out` — never to stdout. This provides the
+  `qoder_csrf_token` cookie), capped expiry at the console's 1-year maximum, and
+  wrote the minted PAT only to `--out` — never to stdout. This provides the
   durable identity path: a PAT is exchanged by the adapter into a per-request
   job token, versus the device token the OAuth flow issues.
 - **Routing prefers accounts with remaining credit, free tier to any account.**

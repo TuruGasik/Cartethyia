@@ -793,6 +793,12 @@ export const providerRoutingSettings = pgTable(
     // row that never set one is `buildClaudeCliUserAgent()` in
     // providers/operations/custom-cli-headers.ts, which this mirrors.
     userAgent: text("user_agent").notNull().default("claude-cli/2.1.293 (external, cli)"),
+    // Operator-set custom User-Agent, stored separately from the provider's
+    // native client identity (`user_agent`). NULL = no override — dispatch
+    // uses the native identity. A non-NULL value is an explicit override
+    // applied at the request edge, even when the provider would otherwise
+    // stamp its own identity.
+    customUserAgent: text("custom_user_agent"),
     // When true, this provider's requests always dial direct. When false,
     // dispatch automatically selects among every active network pool the
     // tenant owns (least-loaded/non-cooldown) — never an admin-pinned pool.
@@ -1458,7 +1464,7 @@ export const telemetryEvents = pgTable(
     outputTokens: integer("output_tokens"),
     reasoningTokens: integer("reasoning_tokens"),
     estimatedCostUsd: numeric("estimated_cost_usd", { precision: 12, scale: 6 }),
-    /** Provider-billed credits (Tencent buddy-meter `credit`); NULL when unreported. */
+    /** Provider-billed credits (Tencent buddy-meter `credit`, Qoder `credits`); NULL when unreported. */
     creditUsed: numeric("credit_used", { precision: 12, scale: 4 }),
     /**
      * Gateway-side time before the upstream dispatch began: routing,
