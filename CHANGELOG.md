@@ -8,6 +8,19 @@ current baseline; an existing one applies the numbered files that followed it.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/).
 
+## [Unreleased]
+
+### Fixed
+
+- Preserve Commandcode cache-read/write and reasoning token usage, including on
+  Go plans, instead of reporting real cache hits as zero. Prefer final stream
+  totals over the last step; absent cache usage remains unknown. This corrects
+  client usage and telemetry for new requests without changing upstream caching
+  or session identity. Previously recorded usage is not rewritten.
+- Format ZCode quota headings as package name plus lowercase period in
+  parentheses, without model names, for example `Start (daily)` and
+  `Referral Weekend (one-time)`.
+
 ## [2.7.6] - 2026-11-04
 
 ### Added

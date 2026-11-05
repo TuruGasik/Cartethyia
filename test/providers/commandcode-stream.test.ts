@@ -194,6 +194,63 @@ describe("Commandcode registry to Responses client", () => {
   });
 });
 
+describe("Commandcode usage", () => {
+  for (const [name, upstreamUsage, expected] of [
+    ["SDK details", {
+      inputTokenDetails: { cacheReadTokens: 80, cacheWriteTokens: 10 },
+      outputTokenDetails: { reasoningTokens: 3 },
+      cachedInputTokens: 70,
+      reasoningTokens: 2,
+    }, { cached_input_tokens: 80, cache_write_tokens: 10, uncached_input_tokens: 20, reasoning_tokens: 3 }],
+    ["SDK flat fields", { cachedInputTokens: 80, reasoningTokens: 3 },
+      { cached_input_tokens: 80, reasoning_tokens: 3 }],
+    ["legacy cached tokens", { cachedTokens: 80, cacheWriteTokens: 10 },
+      { cached_input_tokens: 80, cache_write_tokens: 10 }],
+    ["legacy cache reads", { cacheReadTokens: 80 }, { cached_input_tokens: 80 }],
+    ["explicit zero", {
+      inputTokenDetails: { cacheReadTokens: 0, cacheWriteTokens: 0 },
+      outputTokenDetails: { reasoningTokens: 0 },
+      cachedInputTokens: 80,
+      cacheWriteTokens: 10,
+      reasoningTokens: 3,
+    }, { cached_input_tokens: 0, cache_write_tokens: 0, reasoning_tokens: 0 }],
+    ["unreported details", {},
+      { cached_input_tokens: "unavailable", cache_write_tokens: "unavailable", reasoning_tokens: "unavailable" }],
+    ["malformed details", {
+      inputTokenDetails: [], outputTokenDetails: null, cachedInputTokens: "80", reasoningTokens: "3",
+    }, { cached_input_tokens: "unavailable", reasoning_tokens: "unavailable" }],
+  ] as const) {
+    test(`preserves ${name} without changing inclusive input/output totals`, async () => {
+      const fixture = [
+        { type: "finish-step", usage: { inputTokens: 100, outputTokens: 5, totalTokens: 105, ...upstreamUsage } },
+        { type: "finish" },
+      ].map((event) => JSON.stringify(event)).join("\n");
+      const events: CanonicalEvent[] = [];
+      for await (const event of (await adapter()).dispatch(request, target, context(async () => new Response(fixture)))) events.push(event);
+      expect(events.at(-1)).toMatchObject({ type: "terminal", usage: { input_tokens: 100, output_tokens: 5, ...expected } });
+    });
+  }
+
+  for (const stepUsage of [undefined, { inputTokens: 20, outputTokens: 1, cachedInputTokens: 10 }]) {
+    test(`uses finish totalUsage ${stepUsage ? "over the last step" : "without a finish-step usage"}`, async () => {
+      const fixture = [
+        { type: "finish-step", usage: stepUsage },
+        { type: "finish", totalUsage: {
+          inputTokens: 100, outputTokens: 5,
+          inputTokenDetails: { cacheReadTokens: 80 }, outputTokenDetails: { reasoningTokens: 3 },
+        } },
+      ].map((event) => JSON.stringify(event)).join("\n");
+      const events: CanonicalEvent[] = [];
+      for await (const event of (await adapter()).dispatch(request, target, context(async () => new Response(fixture)))) events.push(event);
+      const output = JSON.parse(new TextDecoder().decode(encodeResponsesEvents(events).bytes)) as Record<string, unknown>;
+      expect(output["usage"]).toMatchObject({
+        input_tokens: 100, output_tokens: 5, total_tokens: 105,
+        input_tokens_details: { cached_tokens: 80 }, output_tokens_details: { reasoning_tokens: 3 },
+      });
+    });
+  }
+});
+
 describe("Commandcode request and stream deadlines", () => {
   test("an active stream survives its opening deadline", async () => {
     const registered = await adapter();

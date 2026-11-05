@@ -52,6 +52,7 @@ export function formatResetDistance(value: string | null, recurring = true): str
 function shortStartPlanName(name: string): string {
   if (/^(?:zcode\s+)?start plan$/i.test(name)) return "Start";
   if (/^zcode global build$/i.test(name)) return "Global Build";
+  if (/^zcode referral /i.test(name)) return name.slice(6);
   return name;
 }
 
@@ -66,13 +67,13 @@ export function formatQuotaPlanLabel(plan: string, source: string | null): strin
 export function formatQuotaWindowLabel(label: string, source?: string | null, modelIds?: readonly string[]): string {
   if (source === "zcode-start") {
     const parts = label.split(" · ");
-    if (parts.length > 1 && modelIds?.some((model) => model.toLowerCase() === parts[0]?.replace(/-trial$/i, "").toLowerCase())) parts.shift();
-    return parts.map((part) => {
-      if (part === "daily") return "Daily";
-      if (part === "nightly") return "Nightly";
-      if (part === "one-time") return "One-time";
-      return shortStartPlanName(part);
-    }).join(" · ");
+    if (parts.length > 2 || (parts.length > 1 && modelIds?.some((model) => model.toLowerCase() === parts[0]?.replace(/-trial$/i, "").toLowerCase()))) parts.shift();
+    const period = parts.at(-1);
+    if (period === "daily" || period === "nightly" || period === "one-time") {
+      parts.pop();
+      return `${parts.map(shortStartPlanName).join(" · ")} (${period})`;
+    }
+    return parts.map(shortStartPlanName).join(" · ");
   }
   const match = /^(\d+)\s*hour$/i.exec(label.trim());
   if (!match) return label;

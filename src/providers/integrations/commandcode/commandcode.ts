@@ -488,19 +488,25 @@ export function transformLine(line: string, state: StreamState, seqBase: number)
     if (rest.reasoning) events.push({ type: "content_delta", sequence_number: seqBase++, content: { kind: "reasoning", payload: null, summary: rest.reasoning } });
     if (rest.text) events.push({ type: "content_delta", sequence_number: seqBase++, content: { kind: "text", text: rest.text } });
     let usage: UsageRecord | undefined;
-    if (state.usage) {
-      const prompt = readNumber(state.usage, "promptTokens") ?? readNumber(state.usage, "inputTokens") ?? 0;
-      const completion = readNumber(state.usage, "completionTokens") ?? readNumber(state.usage, "outputTokens") ?? 0;
-      const total = readNumber(state.usage, "totalTokens") ?? prompt + completion;
-      const cached = readNumber(state.usage, "cachedTokens") ?? readNumber(state.usage, "cacheReadTokens") ?? 0;
-      const usageRecord = usageFromProvider({
+    const finalUsage = isRecord(event["totalUsage"]) ? event["totalUsage"] : state.usage;
+    if (finalUsage) {
+      const inputDetails = isRecord(finalUsage["inputTokenDetails"]) ? finalUsage["inputTokenDetails"] : {};
+      const outputDetails = isRecord(finalUsage["outputTokenDetails"]) ? finalUsage["outputTokenDetails"] : {};
+      const prompt = readNumber(finalUsage, "promptTokens") ?? readNumber(finalUsage, "inputTokens") ?? 0;
+      const completion = readNumber(finalUsage, "completionTokens") ?? readNumber(finalUsage, "outputTokens") ?? 0;
+      // AI SDK details are authoritative; legacy flat fields remain valid when details are absent.
+      const cached = readNumber(inputDetails, "cacheReadTokens") ?? readNumber(finalUsage, "cachedInputTokens")
+        ?? readNumber(finalUsage, "cachedTokens") ?? readNumber(finalUsage, "cacheReadTokens");
+      usage = usageFromProvider({
         input_tokens: prompt,
         output_tokens: completion,
-        total_tokens: total,
+        total_tokens: readNumber(finalUsage, "totalTokens") ?? prompt + completion,
         cached_tokens: cached,
-        cache_creation_input_tokens: readNumber(state.usage, "cacheWriteTokens") ?? undefined,
-      } as unknown as Record<string, unknown>);
-      usage = usageRecord;
+        cache_creation_input_tokens: readNumber(inputDetails, "cacheWriteTokens") ?? readNumber(finalUsage, "cacheWriteTokens"),
+        output_tokens_details: {
+          reasoning_tokens: readNumber(outputDetails, "reasoningTokens") ?? readNumber(finalUsage, "reasoningTokens"),
+        },
+      });
     }
     events.push({ type: "terminal", sequence_number: seqBase, state: "complete", stop_reason: canonicalReason, provider_stop_reason: reason, ...(usage === undefined ? {} : { usage }) });
     return events;
