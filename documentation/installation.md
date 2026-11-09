@@ -84,7 +84,7 @@ the install's persistent drain token and PID/port ownership marker, never
 Heavy periodic sweeps can be switched off per task with
 `CARTETHYIA_DISABLED_TASKS` (a comma-separated list of task names, e.g.
 `oauth-refresh-sweep,buddy-adopt`). The full task list and the config
-reference live in `documentation/reference/configuration.md`; a disabled task
+reference live in [configuration](reference/configuration.md); a disabled task
 is logged once at boot and never scheduled. Use this to cut background work on
 a small host — the quota/health sweeps are the ones to consider first.
 
@@ -209,9 +209,12 @@ bun run dashboard:test
 bun run build
 ```
 
-Use `bun run test`, `test:backend`, or `dashboard:test`, not bare `bun test`.
-The runner `scripts/test/run.ts` supplies the TLS certificate bundle and keeps
-backend/dashboard/script scopes separate. Typechecking is not runtime proof;
-exercise the changed behavior at its actual boundary.
+Use `bun run test`, `test:backend`, `test:integration`, `dashboard:test`, or
+`--scope scripts`, not bare `bun test`. The runner `scripts/test/run.ts`
+supplies the TLS certificate bundle and keeps backend, integration,
+dashboard, and script scopes explicit instead of widening one scope into
+another. Typechecking is not runtime proof; exercise the changed behavior at
+its actual boundary.
 
-See the [project README](../README.md) for the product overview.
+See the [project README](../README.md) for the product overview, and
+[Why Cartethyia](why-cartethyia.md) for the design rationale.

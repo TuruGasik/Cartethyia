@@ -11,12 +11,14 @@ import type { CartethyiaDatabase } from "../../persistence/db-handle";
 import { providerAccounts } from "../../persistence/schema";
 import type { RedisClient } from "../../persistence/redis";
 import { log } from "../../observability/logger";
+import { pushStructuredConsoleLog } from "../../observability/log-ring";
 import { fetchProviderQuota } from "./quota-support";
 import { type FetchLike, type ProviderQuotaResult } from "./quota-contracts";
 import type { ProviderId } from "../provider-contracts";
 import type { ProviderRegistry } from "../provider-registry";
 import { quotaLens, setCachedQuota } from "./cache";
 import { persistQuotaSnapshot } from "./snapshot";
+import { applyAccountVerdict } from "../operations/account-health-service";
 import { asJsonbRecord } from "../../shared/coerce";
 import { KIRO_DEFAULT_LABELS } from "../integrations/kiro/kiro-oauth";
 
@@ -149,12 +151,52 @@ export async function recordAccountCheck(
   db: CartethyiaDatabase,
   accountId: string,
   outcome: { ok: boolean; error?: string | null; category?: string | null },
+  snapshotInvalidator?: { invalidate(): unknown },
 ): Promise<void> {
-  const activeOnly = and(
-    eq(providerAccounts.id, accountId),
-    eq(providerAccounts.status, "active"),
-  );
   if (outcome.ok) {
+    // A successful quota refresh is the freshest evidence about the account's
+    // health: heal a cooldown that the refresh shows is no longer justified, so
+    // the account returns to rotation immediately instead of waiting out the
+    // remainder of a stale fallback window. Only healable scopes heal — an
+    // auth/policy cooldown must never be lifted by a quota report (the
+    // credential is still refused). `lastErrorCategory` carries the category
+    // that parked the account, so the heal is scoped by the same verdict the
+    // health machine wrote.
+    const healableCategories = new Set([
+      "quota_exhausted",
+      "rate_limit_transient",
+      "model_capacity",
+      "model_unreachable",
+      "unknown",
+      "check_failed",
+    ]);
+    const rows = await db
+      .select({ status: providerAccounts.status, lastErrorCategory: providerAccounts.lastErrorCategory })
+      .from(providerAccounts)
+      .where(eq(providerAccounts.id, accountId))
+      .limit(1);
+    const account = rows[0];
+    const healable =
+      account?.status === "cooldown" &&
+      (account.lastErrorCategory === null || healableCategories.has(account.lastErrorCategory));
+    if (healable) {
+      const healed = await db
+        .update(providerAccounts)
+        .set({
+          status: "active",
+          lastSuccessAt: new Date(),
+          lastError: null,
+          lastErrorCategory: null,
+          lastErrorAt: null,
+          consecutiveFailures: 0,
+          cooldownUntil: null,
+          lastRecoveredAt: new Date(),
+        })
+        .where(eq(providerAccounts.id, accountId))
+        .returning({ id: providerAccounts.id });
+      if (healed.length > 0) await snapshotInvalidator?.invalidate();
+      return;
+    }
     await db
       .update(providerAccounts)
       .set({
@@ -164,7 +206,7 @@ export async function recordAccountCheck(
         lastErrorAt: null,
         consecutiveFailures: 0,
       })
-      .where(activeOnly);
+      .where(and(eq(providerAccounts.id, accountId), eq(providerAccounts.status, "active")));
     return;
   }
   const transient = isTransientTimeout(outcome.error);
@@ -185,7 +227,7 @@ export async function recordAccountCheck(
       lastErrorAt: new Date(),
       ...(transient ? {} : { consecutiveFailures: sql`${providerAccounts.consecutiveFailures} + 1` }),
     })
-    .where(activeOnly)
+    .where(and(eq(providerAccounts.id, accountId), eq(providerAccounts.status, "active")))
     .returning({ consecutiveFailures: providerAccounts.consecutiveFailures });
   if (transient) return;
   const failures = failing[0]?.consecutiveFailures ?? 0;
@@ -195,13 +237,18 @@ export async function recordAccountCheck(
   // pass. The cooldown clears itself; a success before it elapses resets the
   // count above.
   if (failures >= QUOTA_FAILURE_PARK_THRESHOLD) {
-    await db
-      .update(providerAccounts)
-      .set({
-        status: "cooldown",
-        cooldownUntil: new Date(Date.now() + QUOTA_FAILURE_COOLDOWN_MS),
-      })
-      .where(activeOnly);
+    // Converge on the health application seam (proposal §3.5): quota refresh
+    // parking is a producer into `applyAccountVerdict`, not a separate state
+    // machine.
+    const parked = await applyAccountVerdict(db, {
+      accountId,
+      status: "cooldown",
+      reason: outcome.error ?? "Account check failed",
+      category: outcome.category ?? "quota_fetch_failed",
+      cooldownUntil: new Date(Date.now() + QUOTA_FAILURE_COOLDOWN_MS),
+      fromStatus: "active",
+    });
+    if (parked) await snapshotInvalidator?.invalidate();
   }
 }
 
@@ -261,6 +308,12 @@ const TARGET_COLUMNS = {
  * disabled account is not necessarily revoked — it may have been parked for a
  * reason unrelated to its credential — and skipping it would let a credential
  * die silently while the row still reads healthy.
+ *
+ * Invariant (area 04, D21): this sweep **never flips status**. The refresh it
+ * kicks off rewrites only credential/expiry columns; `recordAccountCheck` is
+ * active-only, so `disabled` rows are identical after the pass to before. The
+ * `origin: "sweep:quota"` tag on the token-refresh log lines (D26) is what
+ * lets an operator verify that in the Console Log.
  */
 export async function listQuotaRefreshTargets(
   db: CartethyiaDatabase,
@@ -343,6 +396,20 @@ async function runQuotaRefresh(
   let resolveError: string | undefined;
   try {
     credential = await deps.resolveCredential(target.providerId as ProviderId, target.accountId);
+    // D26: every OAuth credential this sweep resolves may have been refreshed
+    // inside the refresh-aware resolver. Label that refresh with its origin so
+    // the Console Log can prove the sweep touches disabled accounts without
+    // ever flipping their status. The refresh service itself also logs the
+    // actual token refresh under the `sweep` origin family; this line names
+    // the sweep here, at the source of the trigger.
+    if (credential !== "" && target.credentialKind === "oauth") {
+      pushStructuredConsoleLog("debug", "Quota sweep resolved OAuth credential; token may have been refreshed", {
+        event: "token_refresh",
+        accountId: target.accountId,
+        providerId: target.providerId,
+        details: { origin: "sweep:quota" },
+      });
+    }
   } catch (error) {
     resolveError = error instanceof Error ? error.message : "Failed to resolve credential";
   }
@@ -406,7 +473,13 @@ async function runQuotaRefresh(
     try {
       await deps.db
         .update(providerAccounts)
-        .set({ quotaPlan: quota.plan })
+        .set({
+          quotaPlan: quota.plan,
+          // Freshness stamp for the plan column: routing uses it to downgrade
+          // a plan older than the freshness horizon to `unknown` instead of
+          // trusting a weeks-old string.
+          quotaPlanFetchedAt: new Date(),
+        })
         .where(eq(providerAccounts.id, target.accountId));
     } catch (error) {
       log.warn(`[quota] failed to record plan for account=${target.accountId}`, error as Error);
@@ -448,10 +521,15 @@ async function runQuotaRefresh(
     }
   }
   try {
-    await recordAccountCheck(deps.db, target.accountId, {
-      ok: quota.error === null,
-      ...(quota.error === null ? {} : { error: quota.error, category: failure ?? "quota_fetch_failed" }),
-    });
+    await recordAccountCheck(
+      deps.db,
+      target.accountId,
+      {
+        ok: quota.error === null,
+        ...(quota.error === null ? {} : { error: quota.error, category: failure ?? "quota_fetch_failed" }),
+      },
+      deps.snapshotInvalidator,
+    );
   } catch (error) {
     // A stamp failure must not lose the freshly fetched quota.
     log.warn(`[quota] failed to stamp check outcome for account=${target.accountId}`, error as Error);

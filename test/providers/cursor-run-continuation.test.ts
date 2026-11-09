@@ -38,7 +38,7 @@ import {
 import { RUN_IDLE_TTL_MS } from "../../src/providers/integrations/cursor/cursor-shared";
 import { decodeFramePayload, encodeFrame, streamFrames } from "../../src/providers/integrations/cursor/protocol/framing";
 import { decodeMessage, encodeMessage } from "../../src/providers/integrations/cursor/protocol/messages";
-import type { CanonicalEvent, CanonicalRequest } from "../../src/protocol/canonical-model";
+import type { CanonicalEvent, CanonicalMessage, CanonicalRequest } from "../../src/protocol/canonical-model";
 import type {
   AttemptLeaseOwnership,
   ProviderAdapter,
@@ -288,11 +288,11 @@ function requestWithTools(
 }
 
 /** `ExecServerMessage{shell_args}` — Cursor's native shell request. */
-function shellExecFrame(execId: number, command: string): Uint8Array {
+function shellExecFrame(execId: number, command: string, cwd = process.cwd()): Uint8Array {
   return serverFrame({
     exec_server_message: {
       id: execId,
-      shell_args: { command, working_directory: "C:/project" },
+      shell_args: { command, working_directory: cwd },
     },
   });
 }
@@ -624,7 +624,127 @@ describe("Cursor cross-request Run continuation", () => {
     // The replayed exchange travels as rebased history: the request submitted
     // a fresh Run turn (not a resume).
     expect(replay.streams[0]?.runRequestCount()).toBe(1);
+    const rebound = replay.streams[0]?.messages().find((message) => message["run_request"] !== undefined);
+    const runRequest = rebound?.["run_request"] as Record<string, unknown> | undefined;
+    const action = runRequest?.["action"] as Record<string, unknown> | undefined;
+    const userAction = action?.["user_message_action"] as Record<string, unknown> | undefined;
+    const userMessage = userAction?.["user_message"] as Record<string, unknown> | undefined;
+    const text = typeof userMessage?.["text"] === "string" ? userMessage["text"] : "";
+    expect(text.match(/what is the weather\?/g)?.length ?? 0).toBe(1);
+    expect(text.match(/\[tool result /g)?.length ?? 0).toBe(1);
     expect(cursorRunSessions.size).toBe(0);
+  });
+
+  test("a partial tool result with no matching tool call anywhere is refused", async () => {
+    const adapter = createCursorAdapter();
+    const { callId, stream } = await openRunAwaitingToolCall(adapter);
+
+    stream.push(turnEndedFrame());
+    const answered = await collect(
+      adapter,
+      continuationRequest(callId),
+      continuationHarness(scopeOf(), stream),
+    );
+    expect(answered.error).toBeUndefined();
+    expect(cursorRunSessions.size).toBe(0);
+
+    // A result whose `toolCall` is absent from the sent conversation is a
+    // partial tail, not a complete replay: there is nothing safe to rebase.
+    const malformedReplay: CanonicalRequest = {
+      ...continuationRequest(callId),
+      messages: [
+        { role: "user", content: [{ kind: "text", text: "older note" }] },
+        { role: "tool", content: [{ kind: "toolResult", call_id: callId, content: [{ kind: "text", text: "stale" }] }] },
+        { role: "assistant", content: [{ kind: "text", text: "thanks" }] },
+        { role: "user", content: [{ kind: "text", text: "continue" }] },
+      ],
+      tools: [LOOKUP_TOOL],
+    };
+    const replay = harnessWith([turnEndedFrame()], scopeOf());
+    const refused = await collect(adapter, malformedReplay, replay);
+    expect(refused.error).toBeDefined();
+    expect(String((refused.error as Error).message)).toContain("no matching tool call");
+    expect(replay.streams.length).toBe(0);
+  });
+
+  test("a complete multi-round replay rebases once the Run is gone", async () => {
+    const adapter = createCursorAdapter();
+    // Round 1 completes and its Run closes.
+    const first = await openRunAwaitingToolCall(adapter, { execId: 1 });
+    first.stream.push(turnEndedFrame());
+    const firstAnswered = await collect(
+      adapter,
+      continuationRequest(first.callId),
+      continuationHarness(scopeOf(), first.stream),
+    );
+    expect(firstAnswered.error).toBeUndefined();
+    expect(cursorRunSessions.size).toBe(0);
+
+    // Round 2 completes and its Run closes too.
+    const second = await openRunAwaitingToolCall(adapter, { execId: 2 });
+    second.stream.push(turnEndedFrame());
+    const secondAnswered = await collect(
+      adapter,
+      continuationRequest(second.callId),
+      continuationHarness(scopeOf(), second.stream),
+    );
+    expect(secondAnswered.error).toBeUndefined();
+    expect(cursorRunSessions.size).toBe(0);
+
+    // The client resends the full transcript: both earlier rounds plus this
+    // tail. Every call_cursor_* result has a matching toolCall in the history
+    // and none is live, so the whole history rebases into a fresh Run instead
+    // of being refused as "no longer pending".
+    const messages: CanonicalMessage[] = [
+      { role: "user", content: [{ kind: "text", text: "what is the weather?" }] },
+    ];
+    for (const id of [first.callId, second.callId]) {
+      messages.push({ role: "assistant", content: [{ kind: "toolCall", call_id: id, name: "lookup", arguments: "{}" }] });
+      messages.push({ role: "tool", content: [{ kind: "toolResult", call_id: id, content: [{ kind: "text", text: "72F and clear" }] }] });
+    }
+    const replay = harnessWith([turnEndedFrame()], scopeOf());
+    const rebased = await collect(
+      adapter,
+      { model: "cursor-model", messages, tools: [LOOKUP_TOOL], stream: true, generation_controls: {}, source_surface: "chat" },
+      replay,
+    );
+    expect(rebased.error).toBeUndefined();
+    expect(replay.streams.length).toBe(1);
+    expect(replay.streams[0]?.runRequestCount()).toBe(1);
+    // The replay's run closes once the turn ends and nothing is left pending.
+    expect(cursorRunSessions.size).toBe(0);
+  });
+
+  test("replaying an older Cursor result beside the live one is refused instead of rebased", async () => {
+    const adapter = createCursorAdapter();
+    const first = await openRunAwaitingToolCall(adapter, { execId: 1 });
+    first.stream.push(turnEndedFrame());
+    const answered = await collect(
+      adapter,
+      continuationRequest(first.callId),
+      continuationHarness(scopeOf(), first.stream),
+    );
+    expect(answered.error).toBeUndefined();
+
+    const second = await openRunAwaitingToolCall(adapter, { execId: 2 });
+    const mixedReplay: CanonicalRequest = {
+      ...continuationRequest(second.callId),
+      messages: [
+        { role: "user", content: [{ kind: "text", text: "first question" }] },
+        { role: "assistant", content: [{ kind: "toolCall", call_id: first.callId, name: "lookup", arguments: "{}" }] },
+        { role: "tool", content: [{ kind: "toolResult", call_id: first.callId, content: [{ kind: "text", text: "old answer" }] }] },
+        { role: "user", content: [{ kind: "text", text: "second question" }] },
+        { role: "assistant", content: [{ kind: "toolCall", call_id: second.callId, name: "lookup", arguments: "{}" }] },
+        { role: "tool", content: [{ kind: "toolResult", call_id: second.callId, content: [{ kind: "text", text: "new answer" }] }] },
+      ],
+      tools: [LOOKUP_TOOL],
+    };
+
+    const refused = await collect(adapter, mixedReplay, continuationHarness(scopeOf(), second.stream));
+    expect(refused.error).toBeDefined();
+    expect(String((refused.error as Error).message)).toContain("mixes live Cursor tool results");
+    expect(second.stream.mcpResults().length).toBe(0);
+    expect(cursorRunSessions.size).toBe(1);
   });
 
   test("results for two different Runs in one request are refused whole", async () => {
@@ -772,8 +892,8 @@ describe("Cursor Run idle expiry", () => {
   });
 });
 
-describe("Cursor host tool forwarding", () => {
-  test("a shell exec whose client declared no shell tool keeps the refusal", async () => {
+describe("Cursor host tool execution", () => {
+  test("a shell exec is executed locally and answered with a shell_result frame", async () => {
     const adapter = createCursorAdapter();
     const stream = new FakeStream([shellExecFrame(5, "echo hi")]);
     stream.endBody();
@@ -781,23 +901,27 @@ describe("Cursor host tool forwarding", () => {
     expect(opened.error).toBeUndefined();
     expect(opened.events.some((event) => event.type === "tool_call_delta")).toBe(false);
     expect(cursorRunSessions.size).toBe(0);
-    const thrown = stream.messages().find((message) => message["exec_client_control_message"] !== undefined);
-    // The refusal stands; the stated reason moved. Host tools are no longer
-    // refused for being host tools — they are relayed when the request declared
-    // them. This one is refused because nothing declared it.
-    expect(JSON.stringify(thrown)).toContain("this tool is not one the request declared");
+    // The native exec is answered in-band with a typed shell_result — not a
+    // refusal, and not a relayed tool call.
+    const answered = stream.messages().find((message) => message["exec_client_message"] !== undefined);
+    expect(answered).toBeDefined();
+    const exec = answered?.["exec_client_message"] as Record<string, unknown>;
+    expect(exec["shell_result"]).toBeDefined();
+    expect(JSON.stringify(exec["shell_result"])).toContain("echo hi");
   });
 
-  test("a shell exec whose client declared a shell tool is relayed", async () => {
-    // The behaviour the old refusal could not express: the same frame, with the
-    // tool declared, becomes an ordinary tool call for the client to answer.
+  test("a shell frame with a declared shell tool is still executed locally, not relayed", async () => {
+    // The old behaviour relayed declared host tools to the client; the executor
+    // now answers them in-band regardless of client tool declarations.
     const adapter = createCursorAdapter();
     const stream = new FakeStream([shellExecFrame(5, "echo hi")]);
     stream.endBody();
-    // The descriptor set comes from the request's own tools, so declaring
-    // `shell` is all it takes for the native arm to be recognised as declared.
     const opened = await collect(adapter, requestWithTools([SHELL_TOOL]), harnessWith([], scopeOf(), undefined, stream));
     expect(opened.error).toBeUndefined();
-    expect(opened.events.some((event) => event.type === "tool_call_delta")).toBe(true);
+    expect(opened.events.some((event) => event.type === "tool_call_delta")).toBe(false);
+    const answered = stream.messages().find((message) => message["exec_client_message"] !== undefined);
+    expect(answered).toBeDefined();
+    const exec = answered?.["exec_client_message"] as Record<string, unknown>;
+    expect(exec["shell_result"]).toBeDefined();
   });
 });

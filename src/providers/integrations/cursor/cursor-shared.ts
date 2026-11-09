@@ -33,7 +33,7 @@ export const CURSOR_OAUTH_CLIENT_ID = "KbZUR41cY7W6zRSdpSUJ7I7mLYBKOCmB";
  * operator was not what the request carried. Discovery supersedes both on its
  * first successful fetch.
  */
-export const FALLBACK_CLIENT_VERSION = "cli-2026.10.19-6bbf2c4";
+export const FALLBACK_CLIENT_VERSION = "cli-3.29.9-306d153";
 
 /** Connect-RPC paths. Run is served by the discovered agent origin, not the API host. */
 export const RUN_PATH = "/agent.v1.AgentService/Run";
@@ -43,6 +43,24 @@ export const SERVER_CONFIG_PATH = "/aiserver.v1.ServerConfigService/GetServerCon
 /** Connect unary/bidi protocol headers. */
 export const CONTENT_TYPE_CONNECT_PROTO = "application/connect+proto";
 export const CONNECT_PROTOCOL_VERSION = "1";
+
+/**
+ * The client's timezone name, as the CLI sends on every request
+ * (`Intl.DateTimeFormat().resolvedOptions().timeZone`). Computed once: the
+ * value is stable for one process and the call is not cheap enough to repeat
+ * per request.
+ */
+let cachedTimezone: string | undefined;
+export function resolveCursorTimezone(): string {
+  if (cachedTimezone !== undefined) return cachedTimezone;
+  try {
+    const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    cachedTimezone = typeof zone === "string" && zone.length > 0 ? zone : "";
+  } catch {
+    cachedTimezone = "";
+  }
+  return cachedTimezone;
+}
 
 /** A raw Cursor API key (as opposed to a JWT already exchanged from one). */
 const CURSOR_API_KEY_PREFIX = "crsr_";
@@ -65,11 +83,14 @@ export const SESSION_REFRESH_TIMEOUT_MS = 20_000;
 
 /**
  * How long a live Cursor Run is held open waiting for the client's next
- * tool-result request. Matches the donor's continuation default: a tool round
- * the client never answers must not hold an HTTP/2 stream, an account lease, or
- * a pool slot for the life of the process.
+ * tool-result request. Matches the donor's relay hold (`CURSOR_RELAY_IDLE_
+ * TIMEOUT_MS` in oh-my-pi: 30 minutes): a tool round the client never answers
+ * must not hold an HTTP/2 stream, an account lease, or a pool slot for the life
+ * of the process, but a human-approved tool round often takes longer than ten
+ * minutes — a shorter TTL expired the Run mid-approval and forced the client to
+ * resend the whole conversation.
  */
-export const RUN_IDLE_TTL_MS = 10 * 60_000;
+export const RUN_IDLE_TTL_MS = 30 * 60_000;
 
 /**
  * Any HTTPS subdomain of `cursor.sh` is an acceptable Run host: the region

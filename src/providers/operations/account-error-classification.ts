@@ -10,6 +10,7 @@
 import { isRecord } from "../../protocol/codecs";
 import { GatewayError } from "../../protocol/gateway-error";
 import { BUDDY_PROVIDER_IDS } from "../provider-metadata";
+import type { AccountTier } from "./account-tier";
 import { parseProviderResetDuration, parseUpstreamBackoff } from "../../protocol/upstream-parsing";
 import {
   resolveAccountAuthRejectedCooldownMs,
@@ -22,17 +23,17 @@ import {
   resolveAccountTransientCooldownMs,
   resolveAccountUnclassifiedCooldownMs,
 } from "../../config/cooldowns";
+import {
+  githubRules,
+  qoderPlanGatedRule,
+  qoderModelQuotaRule,
+  traeRules,
+  inceptionRules,
+  perchRules,
+  isGrokFreeTierExhaustion,
+  GROK_QUOTA_COOLDOWN_MS,
+} from "./provider-rules";
 const DEFAULT_RATE_LIMIT_COOLDOWN_MS = resolveAccountRateLimitCooldownMs;
-/**
- * Inception's per-minute limit window (1 minute).
- *
- * Inception's Free tier throttles per minute (1 000 requests / 1M input
- * tokens / 100K output tokens) and the window resets every minute. The generic
- * 15-minute rate-limit fallback would park a healthy key long after the window
- * refilled; 1 minute is the provider's own cadence, hardcoded because it is a
- * fact about the upstream, not a deployment knob.
- */
-const INCEPTION_RATE_LIMIT_COOLDOWN_MS = 60_000;
 // Fallback when the error states no usable duration: deliberately short (1h,
 // not 24h) — quota state is re-probed on the next failure, so an unknown
 // reset cadence self-corrects instead of parking the account for a day.
@@ -52,38 +53,12 @@ export const COOLDOWN_RECOVERY_BATCH = 500;
  */
 const UNCLASSIFIED_COOLDOWN_MS = resolveAccountUnclassifiedCooldownMs;
 /**
- * xAI Grok Build's free tier resets on a rolling 24-hour window, so its
- * exhaustion is a full-day quota cooldown — never the generic 1h fallback,
- * which let the account re-enter rotation inside the window.
- */
-const GROK_QUOTA_COOLDOWN_MS = 24 * 60 * 60 * 1000;
-/**
- * Trae answers `4013 "AI service is not available in the current region now."`
- * when the upstream does not serve the account's region. A day because the
- * verdict is durable: it reproduces on every request until the region opens,
- * and the account must not be re-dialled every thirty seconds for the whole
- * window.
- */
-const TRAE_REGION_COOLDOWN_MS = 24 * 60 * 60 * 1000;
-/**
- * Trae's free-tier quota (`4008` / "exceeded the quota") resets daily, so its
- * exhaustion is a full-day model backoff — never the generic 1h fallback,
- * which let the account re-enter rotation inside the window.
- */
-const TRAE_QUOTA_COOLDOWN_MS = 24 * 60 * 60 * 1000;
-/**
- * Qoder's quota verdicts (`110` billing-daily-count, the upstream-499 close)
- * are per-model: one model's spend cap does not drain another. A day matches
- * the daily billing window the provider names.
- */
-const QODER_QUOTA_COOLDOWN_MS = 24 * 60 * 60 * 1000;
-/**
  * The buddy family's policy/channel block (`11140`, `11128`) is a *base* backoff,
  * not a flat penalty — see {@link resolveAccountPolicyBlockCooldownMs}. It used
  * to be two constants, 24h for the content block and 6h for the channel one,
  * both applied on the first observation. That was wrong in the direction that
  * costs most: `11140` is also what a wrong desktop `User-Agent` brand answers
- * (`workbuddy/shared.ts`), so after we fixed a header regression every buddy
+ * (`codebuddy/shared.ts`), so after we fixed a header regression every buddy
  * account stayed dead for up to a further day, and one prompt that failed a
  * safety review cost a whole account a day. As a base it escalates through the
  * consecutive-failure ladder, which tells the two causes apart by what they do
@@ -180,12 +155,6 @@ export type AccountErrorCategory =
   | "model_unreachable"
   | "auth_invalidated"
   /**
-   * Deprecated: an upstream ban. Kept so existing health rows keep rendering
-   * instead of showing a blank cause. No longer produced — see
-   * `policy_blocked_banned` and `policy_blocked_invalid_request`.
-   */
-  | "policy_blocked"
-  /**
    * The upstream banned this credential: a verdict on the account, e.g. buddy
    * `11140` "request illegal" with "Your account has been restricted due to
    * unusual activity". Cooldown cannot help — the account is not throttled, it
@@ -259,6 +228,12 @@ export interface AccountFailureEvidence {
    * limit the provider said resets in 23 days.
    */
   readonly upstreamBody?: unknown;
+  /**
+   * The account's tier, derived from its plan (`mapPlanToTier`). Read only by
+   * the writer when it resolves tier-aware cooldown rules; the classifier
+   * itself does not branch on it.
+   */
+  readonly accountTier?: AccountTier;
 }
 
 export interface AccountErrorClassification {
@@ -291,6 +266,15 @@ export interface AccountErrorClassification {
    */
   readonly providerStated?: boolean;
   /**
+   * True when the classification is a verdict on the *credential* (not a
+   * transient backoff): the request should rotate to a sibling account now
+   * instead of waiting out the cooldown on this one. Usage-limit exhaustion,
+   * spending caps, and banned/revoked credentials rotate; per-minute
+   * throttles (TPM/RPM), model-capacity overload, and concurrency caps back
+   * off on the same account instead.
+   */
+  readonly rotateAccount?: boolean;
+  /**
    * True when the upstream reported the model as one it does not serve (the
    * buddy family's `11102`), rather than one this account merely cannot reach.
    *
@@ -299,6 +283,14 @@ export interface AccountErrorClassification {
    * apart — it needs to know whether to count the hit and escalate the window.
    */
   readonly modelUnsupported?: boolean;
+  /**
+   * Where the cooldown duration came from (D18). A duration resolved from a
+   * tier/provider rule (`provider-rule`) is a policy decision and must NOT go
+   * through `escalateFallbackCooldown` — the 1h escalation cap would cut the
+   * 24h Trae rule down to an hour on the first failure. Only a pure fallback
+   * (`fallback`) escalates.
+   */
+  readonly ruleSource?: "provider-rule" | "fallback";
 }
 
 /**
@@ -342,6 +334,26 @@ export function escalateFallbackCooldown(
   if (providerStated || cooldownMs <= 0) return cooldownMs;
   const level = Math.min(Math.max(0, consecutiveFailures), COOLDOWN_ESCALATION_MAX_LEVEL);
   return Math.min(cooldownMs * 2 ** level, resolveAccountCooldownEscalationMaxMs());
+}
+
+/**
+ * Returns a cooldown duration with the D18 escalation split applied.
+ *
+ * A duration that came from a tier/provider rule (`ruleSource === "provider-rule"`)
+ * is a policy decision and must never pass through
+ * {@link escalateFallbackCooldown}: the 1h cap would truncate the 24h Trae
+ * free-tier rule to one hour on the first failure. Only a pure fallback
+ * (`ruleSource === "fallback"`, or unset for callers that predate the split)
+ * escalates.
+ */
+export function applyRuleEscalation(
+  cooldownMs: number,
+  providerStated: boolean,
+  consecutiveFailures: number,
+  ruleSource: "provider-rule" | "fallback" | undefined,
+): number {
+  if (ruleSource === "provider-rule") return cooldownMs;
+  return escalateFallbackCooldown(cooldownMs, providerStated, consecutiveFailures);
 }
 
 /**
@@ -459,26 +471,6 @@ function banWording(lower: string): boolean {
 }
 
 /**
- * Whether GitHub Copilot stated the account lacks a license — a ban-shaped
- * verdict on the account, not a refreshable auth rejection.
- *
- * Observed live (2026-11-03): the health log showed
- * `unauthorized: not licensed to use Copilot` and `forbidden` on
- * `gpt-6-luna`. Copilot answers 401 for a bad credential and 403 for a
- * license/entitlement refusal, so `forbidden`/`unauthorized` on this surface
- * is the same verdict. No amount of waiting or refreshing changes it — the
- * subscription cannot serve this credential.
- */
-function copilotNotLicensed(lower: string): boolean {
-  return (
-    lower.includes("not licensed") ||
-    lower.includes("forbidden") ||
-    lower.includes("unauthorized") ||
-    lower.includes("license")
-  );
-}
-
-/**
  * Bounded to a day, matching `MAX_COOLDOWN_MS` in the failure policy: a stated
  * window longer than that is a monthly or plan-level limit, and parking an
  * account for a month on one upstream field is a decision for the operator,
@@ -496,6 +488,19 @@ function tryParseUpstreamBody(text: string): unknown {
   }
 }
 
+/** Reads `error.message` from a parsed upstream body object. */
+function nestedErrorMessage(body: unknown): string {
+  if (typeof body !== "object" || body === null) return "";
+  const record = body as Record<string, unknown>;
+  if (typeof record["message"] === "string") return record["message"];
+  const error = record["error"];
+  if (typeof error === "object" && error !== null) {
+    const message = (error as Record<string, unknown>)["message"];
+    if (typeof message === "string") return message;
+  }
+  return "";
+}
+
 /**
  * Reads a reset window the upstream stated in structured fields.
  *
@@ -509,13 +514,26 @@ function tryParseUpstreamBody(text: string): unknown {
  * (`resets_at`, seconds or milliseconds) and a relative delay
  * (`resets_in_seconds`). The later of the two wins, since they are the same
  * claim computed at slightly different instants.
+ *
+ * Structured Google rpc error details are read too — Vertex/Antigravity returns
+ * the reset inside `details[]` as `ErrorInfo.metadata.quotaResetDelay` /
+ * `quotaResetTimeStamp` and `RetryInfo.retryDelay` (a Go duration like
+ * `596805.017558959s`). Without this a "Resets in 165h46m45s" refusal cooled
+ * for the 15-minute fallback and re-entered rotation hours before it could
+ * serve. The prose `message` is parsed through `parseProviderResetDuration` as
+ * a last resort, because several providers state the window only there.
  */
 function parseUpstreamBodyReset(body: unknown): number | null {
   if (typeof body !== "object" || body === null) return null;
   const record = body as Record<string, unknown>;
   // Some providers nest under `error`, some return it at the top level.
-  const candidates = [record, (record["error"] as Record<string, unknown> | undefined) ?? undefined];
+  const errorRecord = (record["error"] as Record<string, unknown> | undefined) ?? undefined;
+  const candidates = [record, errorRecord];
   let best: number | null = null;
+  const consider = (delay: number | null | undefined): void => {
+    if (typeof delay !== "number" || !Number.isFinite(delay) || delay <= 0) return;
+    best = best === null ? delay : Math.max(best, delay);
+  };
   for (const candidate of candidates) {
     if (typeof candidate !== "object" || candidate === null) continue;
     const now = Date.now();
@@ -526,8 +544,7 @@ function parseUpstreamBodyReset(body: unknown): number | null {
       // milliseconds ~13, and the two are four orders of magnitude apart — so
       // the smaller is scaled up rather than guessed from a threshold date.
       const epochMs = absolute < 1e11 ? absolute * 1000 : absolute;
-      const delay = epochMs - now;
-      if (delay > 0) best = best === null ? delay : Math.max(best, delay);
+      consider(epochMs - now);
     }
 
     const relative =
@@ -535,17 +552,67 @@ function parseUpstreamBodyReset(body: unknown): number | null {
       candidate["reset_in_seconds"] ??
       candidate["retry_after_seconds"];
     if (typeof relative === "number" && Number.isFinite(relative) && relative > 0) {
-      const delay = relative * 1000;
-      best = best === null ? delay : Math.max(best, delay);
+      consider(relative * 1000);
     }
 
     const minutes = candidate["limit_window_minutes"] ?? candidate["reset_in_minutes"];
     if (typeof minutes === "number" && Number.isFinite(minutes) && minutes > 0) {
-      const delay = minutes * 60_000;
-      best = best === null ? delay : Math.max(best, delay);
+      consider(minutes * 60_000);
+    }
+
+    // The body's own prose (both top-level and nested under `error`): providers
+    // that state the window only in the message ("Resets in 165h46m45s") are
+    // honored rather than cooled for the 15-minute fallback.
+    const prose = candidate["message"];
+    if (typeof prose === "string" && prose.length > 0) {
+      consider(parseProviderResetDuration(prose));
+    }
+  }
+
+  // Google rpc `details[]` (Vertex/Antigravity error frames): `ErrorInfo`
+  // metadata carries the reset delay/timestamp, `RetryInfo` carries the retry
+  // delay directly.
+  const details = errorRecord?.["details"];
+  if (Array.isArray(details)) {
+    for (const detail of details) {
+      if (typeof detail !== "object" || detail === null) continue;
+      const entry = detail as Record<string, unknown>;
+      const type = typeof entry["@type"] === "string" ? entry["@type"] : "";
+      if (type.includes("google.rpc.ErrorInfo")) {
+        const metadata = entry["metadata"] as Record<string, unknown> | undefined;
+        const delay = metadata?.["quotaResetDelay"] ?? metadata?.["quotaResetDelaySeconds"];
+        consider(parseGoDuration(delay));
+        const stamp =
+          metadata?.["quotaResetTimeStamp"] ?? metadata?.["quotaResetTimestamp"];
+        if (typeof stamp === "string" && stamp.length > 0) {
+          const t = new Date(stamp).getTime();
+          if (Number.isFinite(t)) consider(t - Date.now());
+        }
+      }
+      if (type.includes("google.rpc.RetryInfo")) {
+        consider(parseGoDuration(entry["retryDelay"]));
+      }
+      // Some providers put the retry delay on the detail without a type.
+      consider(parseGoDuration(entry["retryDelay"]));
     }
   }
   return best === null ? null : Math.min(MAX_UPSTREAM_STATED_COOLDOWN_MS, Math.round(best));
+}
+
+/** Parses a Go duration string (`596805.017558959s`, `1h30m0s`) to ms. */
+function parseGoDuration(value: unknown): number | null {
+  if (typeof value !== "string") return null;
+  const text = value.trim().replace(/\s+/g, "");
+  if (!/^(?:(\d+(?:\.\d+)?)h)?(?:(\d+(?:\.\d+)?)m)?(?:(\d+(?:\.\d+)?)s)?$/.test(text)) {
+    return null;
+  }
+  const match = /^(?:(\d+(?:\.\d+)?)h)?(?:(\d+(?:\.\d+)?)m)?(?:(\d+(?:\.\d+)?)s)?$/.exec(text);
+  if (!match) return null;
+  let ms = 0;
+  if (match[1] !== undefined) ms += Number(match[1]) * 3_600_000;
+  if (match[2] !== undefined) ms += Number(match[2]) * 60_000;
+  if (match[3] !== undefined) ms += Number(match[3]) * 1_000;
+  return ms > 0 ? ms : null;
 }
 
 
@@ -598,14 +665,14 @@ interface AccountErrorContext {
  * classifier's locals, no allocation per classification): the table is built
  * once per call from values already computed for every arm.
  */
-interface AccountErrorRule {
+export interface AccountErrorRule {
   readonly name: string;
   readonly match: (signals: AccountErrorSignals) => boolean;
   readonly decide: (signals: AccountErrorSignals) => AccountErrorClassification;
 }
 
 /** The shared signals every arm reads, computed once per classification. */
-interface AccountErrorSignals {
+export interface AccountErrorSignals {
   readonly message: string;
   readonly lower: string;
   readonly folded: string;
@@ -635,9 +702,35 @@ interface AccountErrorSignals {
   readonly queuedUpstream: boolean;
   readonly validationRequired: boolean;
   readonly validationUrl: string | undefined;
+  /** True when this failure should switch to a sibling account rather than wait. */
+  readonly rotateAccount: boolean;
 }
 
 const VALIDATION_URL_RE = /https?:\/\/[^\s"'\\]+/;
+
+/**
+ * True when the wording names a *transient* rolling throttle — per-minute
+ * token/request windows (TPM/RPM), "too many requests", "per minute" — that
+ * self-heals within the window, so it must back off on the same account rather
+ * than rotate to a sibling. Mirrors oh-my-pi's `RATE_LIMIT_EXCEEDED` lane.
+ */
+function transientRateLimitWording(lower: string): boolean {
+  return (
+    lower.includes("rate limit") ||
+    lower.includes("rate_limit") ||
+    lower.includes("too many requests") ||
+    lower.includes("per minute") ||
+    lower.includes("tokens per minute") ||
+    lower.includes("requests per minute") ||
+    lower.includes("tpm limit") ||
+    lower.includes("rpm limit") ||
+    lower.includes("tpm exhausted") ||
+    lower.includes("rpm exhausted") ||
+    lower.includes("ratelimitexceeded.endpointtpm") ||
+    lower.includes("ratelimitexceeded.endpointrpm") ||
+    lower.includes("presque")
+  );
+}
 
 /**
  * Extracts the Google `validation_url` from an Antigravity rejection.
@@ -719,13 +812,27 @@ function accountErrorContext(error: unknown, options?: AccountFailureEvidence): 
   const headerCooldown =
     options?.retryAfterMs ??
     parseUpstreamBackoff({ get: getHeader });
-  const messageCooldown = parseProviderResetDuration(message);
   const rawUpstreamResponse =
     origin === "upstream" &&
     error instanceof GatewayError &&
     typeof error.details.raw === "string"
       ? error.details.raw
       : undefined;
+  // The surface `message` may be a generic placeholder ("Provider returned HTTP
+  // 429.") even when the upstream body states a reset window. Fall through to
+  // the raw body's prose when the surface message names none, so a
+  // "Resets in 165h46m45s" refusal is honored instead of cooling for the
+  // 15-minute fallback.
+  const messageCooldown =
+    parseProviderResetDuration(message) ??
+    (rawUpstreamResponse === undefined
+      ? null
+      : parseProviderResetDuration(rawUpstreamResponse)) ??
+    (options?.upstreamBody === undefined
+      ? null
+      : typeof options.upstreamBody === "string"
+        ? parseProviderResetDuration(options.upstreamBody)
+        : parseProviderResetDuration(nestedErrorMessage(options.upstreamBody)));
   // The body's own fields, when they can be reached. Checked alongside the
   // header and the prose rather than instead of them: a provider may state the
   // window in any of the three, and the longest honest statement wins.
@@ -775,6 +882,16 @@ function accountErrorContext(error: unknown, options?: AccountFailureEvidence): 
     // invisible). Defaulting true keeps existing callers conservative.
     routesVisible: true,
     providerStated,
+    // Usage-limit exhaustion, spending caps, and credential verdicts rotate to a
+    // sibling account now; transient throttles (per-minute, capacity) do not.
+    // The transient guard also applies to a category the classifier resolved to
+    // `quota_exhausted` — a TPM/RPM throttle phrased with quota wording
+    // ("tpm exhausted (type=quota_exceeded_error)") still self-heals within the
+    // minute and must not burn a sibling credential.
+    rotateAccount:
+      (category === "quota_exhausted" || category === "policy_blocked_banned") &&
+      !(statusCode === 429 && transientRateLimitWording(lower)) &&
+      !(statusCode === 503 || statusCode === 529),
     modelUnsupported,
   });
 
@@ -952,9 +1069,12 @@ export function classifyAccountError(
       lower.includes("have exceeded the quota") ||
       lower.includes("balance exhausted") ||
       lower.includes("insufficient balance") ||
+      lower.includes("insufficient credits") ||
       lower.includes("out of credits") ||
       lower.includes("credits exhausted") ||
       lower.includes("spending limit") ||
+      lower.includes("spending cap") ||
+      lower.includes("monthly spend limit") ||
       lower.includes("billing daily count exceeded") ||
       // Same Qoder family reached by body text when the code is not parsed out.
       (lower.includes("pricingurl") && lower.includes("qoder.com/pricing")));
@@ -1185,6 +1305,16 @@ export function classifyAccountError(
     queuedUpstream,
     validationRequired,
     validationUrl,
+    // A quota/spend/cap signal rotates to a sibling account; a per-minute
+    // throttle, model capacity, or concurrency cap backs off on the same one.
+    // `quotaSignal` is the broad price-refusal match — exclude explicit
+    // throttles it would otherwise sweep (see the rate-limit and Inception
+    // arms, which match the same signals and must keep backoff-only behavior).
+    rotateAccount:
+      quotaSignal &&
+      !modelFrequencyWindow &&
+      !(statusCode === 429 && transientRateLimitWording(lower)) &&
+      !(statusCode === 503 || statusCode === 529),
   };
 
   for (const rule of ACCOUNT_ERROR_RULES) {
@@ -1283,33 +1413,7 @@ const ACCOUNT_ERROR_RULES: readonly AccountErrorRule[] = [
         true,
       ),
   },
-  {
-    // GitHub Copilot answers a license/entitlement refusal with 403 and
-    // "not licensed to use Copilot" / "forbidden" / "unauthorized". That is a
-    // verdict on the account: the subscription cannot serve this credential,
-    // and no amount of waiting or refreshing changes it. Cooldown cycling
-    // (auth_invalidated + 5m backoff) kept a dead account in rotation where a
-    // client's retry budget burned sibling accounts — the same failure the
-    // buddy ban exists to prevent. Disable immediately. Must run before
-    // `credential-rejected`, which would claim the bare 403 as a refreshable
-    // auth rejection.
-    name: "github-copilot-not-licensed",
-    match: (s) =>
-      s.origin === "upstream" &&
-      s.providerId === "github" &&
-      copilotNotLicensed(s.lower),
-    decide: (s) =>
-      s.result(
-        "policy_blocked_banned",
-        "disabled",
-        0,
-        null,
-        s.reason("GitHub Copilot account not licensed"),
-        // A license refusal is evidence about the account even at provider
-        // scope, for the same reason a named revocation or a buddy ban is.
-        true,
-      ),
-  },
+  ...githubRules,
   {
     name: "credential-rejected",
     match: (s) =>
@@ -1401,30 +1505,7 @@ const ACCOUNT_ERROR_RULES: readonly AccountErrorRule[] = [
     decide: (s) =>
       s.result("quota_exhausted", "cooldown", 0, null, s.reason("Request price refused by the provider"), false),
   },
-  {
-    // Qoder's code-112 pricing refusal (`{"code":"112","message":"{\"pricingUrl\":...}"}`)
-    // is a "this model is not included in this account's plan, buy more" verdict
-    // for one pair — the account keeps serving its other models. The probe path
-    // does not always carry the code in its evidence (only the message does), so
-    // the match keys on the provider id plus the pricing-page wording as well.
-    // It must run before `quota-exhausted`, which would park the whole account.
-    name: "qoder-plan-gated",
-    match: (s) =>
-      (s.providerId === "qoder" || s.providerId === "qodercn") &&
-      (s.providerCode === "112" || s.lower.includes("pricingurl")),
-    decide: (s) => {
-      const cooldownMs = unsupportedModelCooldownMs(s.modelBlockHits);
-      return s.result(
-        "model_unreachable",
-        "cooldown",
-        cooldownMs,
-        new Date(Date.now() + cooldownMs),
-        s.reason("Model not included in this account's plan"),
-        s.origin === "upstream" && s.modelId !== undefined,
-        true,
-      );
-    },
-  },
+  qoderPlanGatedRule,
   {
     name: "model-plan-gated",
     match: (s) => s.quotaSignal && s.providerCode === "112",
@@ -1441,106 +1522,22 @@ const ACCOUNT_ERROR_RULES: readonly AccountErrorRule[] = [
       );
     },
   },
-  {
-    // Trae answers `4013 "AI service is not available in the current region
-    // now."` when the upstream does not serve the account's region. That is a
-    // durable verdict on the account, not a transient transport fault: it
-    // reproduces on every request until the region opens, so it must cool hard
-    // for a day rather than be re-dialled every thirty seconds. Must run
-    // before `transport-fault`, which would read the 502 as a short
-    // `server_error`.
-    name: "trae-region-unavailable",
-    match: (s) =>
-      (s.providerId === "trae" || s.providerId === "traecn") &&
-      (s.providerCode === "4013" || s.lower.includes("not available in the current region")),
-    decide: (s) => {
-      const cooldownMs = TRAE_REGION_COOLDOWN_MS;
-      return s.result(
-        "quota_exhausted",
-        "cooldown",
-        cooldownMs,
-        new Date(Date.now() + cooldownMs),
-        s.reason("Trae service unavailable in the current region"),
-        // Account-scoped provider evidence still has to reach the writer: a
-        // stream frame carries no credential detail, so `canMutate` is false
-        // and without this the account stays in rotation to reproduce the
-        // refusal for the whole window the region is closed for.
-        true,
-      );
-    },
-  },
-  {
-    // Trae's free-tier quota (`4008` / "exceeded the quota") resets daily.
-    // Treating it like the generic quota cooldown (1h account-wide fallback)
-    // let the account re-enter rotation inside the window and reproduce the
-    // refusal every few minutes — the "cooldown not holding" report. The
-    // verdict is a full-day backoff on *any* model (the account's quota is
-    // spent, so every model on it shares the wall). Scoped to the model so
-    // the account is not disabled wholesale; the 1-day window means a model
-    // stays parked for the day instead of flapping. Must run before
-    // `quota-exhausted`, which would apply the generic shorter fallback.
-    name: "trae-quota-exhausted",
-    match: (s) =>
-      (s.providerId === "trae" || s.providerId === "traecn") &&
-      (s.providerCode === "4008" || s.lower.includes("have exceeded the quota")),
-    decide: (s) => {
-      const cooldownMs = s.statedCooldownMs ?? TRAE_QUOTA_COOLDOWN_MS;
-      return s.result(
-        "model_unreachable",
-        "cooldown",
-        cooldownMs,
-        new Date(Date.now() + cooldownMs),
-        s.reason("Trae quota exhausted for this model"),
-        s.origin === "upstream" && s.modelId !== undefined,
-      );
-    },
-  },
-  {
-    // Qoder's quota verdicts — `110` "Billing daily count exceeded" and the
-    // upstream-499 exhausted-quota close — are per-model: one model's spend
-    // cap does not drain another. Scoping them to the model keeps the account
-    // serving its other models. Must run before `quota-exhausted`, which
-    // parks the whole account.
-    name: "qoder-model-quota",
-    match: (s) =>
-      (s.providerId === "qoder" || s.providerId === "qodercn") && s.quotaSignal,
-    decide: (s) => {
-      const cooldownMs = s.statedCooldownMs ?? QODER_QUOTA_COOLDOWN_MS;
-      return s.result(
-        "model_unreachable",
-        "cooldown",
-        cooldownMs,
-        new Date(Date.now() + cooldownMs),
-        s.reason("Qoder quota exhausted for this model"),
-        s.origin === "upstream" && s.modelId !== undefined,
-      );
-    },
-  },
+  ...traeRules,
+  qoderModelQuotaRule,
   {
     name: "quota-exhausted",
-    match: (s) => s.origin === "upstream" && s.quotaSignal,
+    match: (s) =>
+      s.origin === "upstream" &&
+      s.quotaSignal &&
+      // A transient rolling throttle phrased with quota wording (TPM/RPM
+      // "tpm exhausted (type=quota_exceeded_error)") self-heals within the
+      // minute; it belongs to the rate-limit arm below, never here.
+      !transientRateLimitWording(s.lower),
     decide: (s) => {
       // xAI Grok Build's free tier resets on a rolling window. Use a duration
       // stated by the provider when present; otherwise park for the conservative
       // 24-hour fallback.
-      const grokFreeTier =
-        s.providerCode === "subscription:free-usage-exhausted" ||
-        s.providerCode.startsWith("subscription:") ||
-        // A 402 spend/entitlement wall (`personal-team-blocked:spending-limit`,
-        // "out of credits") is the same verdict: the account cannot serve until
-        // the operator tops up or upgrades. The default 1h fallback re-dialled
-        // it every hour inside a window that will not clear on its own.
-        s.providerCode.includes("spending") ||
-        s.providerCode.includes("credits") ||
-        s.lower.includes("free-usage") ||
-        s.lower.includes("free usage") ||
-        s.lower.includes("included free usage") ||
-        s.lower.includes("rolling 24-hour") ||
-        s.lower.includes("rolling 24 hour") ||
-        s.lower.includes("spending limit") ||
-        s.lower.includes("out of credits") ||
-        s.lower.includes("run out of credits") ||
-        s.lower.includes("need a grok subscription");
+      const grokFreeTier = isGrokFreeTierExhaustion(s);
       const buddyCreditsExhausted =
         s.providerCode === "14018" || s.lower.includes("credits exhausted");
       const cooldownMs = grokFreeTier
@@ -1562,38 +1559,8 @@ const ACCOUNT_ERROR_RULES: readonly AccountErrorRule[] = [
       );
     },
   },
-  {
-    // Inception's Free tier throttles per minute (1 000 requests / 1M input
-    // tokens / 100K output tokens) and the window resets every minute. A
-    // generic 429 would cool the account for the 15-minute default, leaving a
-    // healthy key parked long after the window refilled — the source of
-    // "limitasiya lumayan keras". This arm must run before `rate-limit`: it
-    // matches the same signals and shortens the window to 1 minute so routing
-    // moves to the next account and the flagged one returns almost at once.
-    name: "inception-per-minute-limit",
-    match: (s) =>
-      s.origin === "upstream" &&
-      s.providerId === "inception" &&
-      (s.statusCode === 429 ||
-        s.providerCode === "rate_limit_reached" ||
-        s.providerCode === "rate_limit_exceeded" ||
-        s.lower.includes("rate_limit") ||
-        s.lower.includes("rate limit") ||
-        s.lower.includes("too many requests") ||
-        s.lower.includes("tokens per minute") ||
-        s.lower.includes("input token")),
-    decide: (s) => {
-      const cooldownMs = s.statedCooldownMs ?? INCEPTION_RATE_LIMIT_COOLDOWN_MS;
-      return s.result(
-        "rate_limit_transient",
-        "cooldown",
-        cooldownMs,
-        new Date(Date.now() + cooldownMs),
-        s.reason("Inception per-minute input-token limit"),
-        s.origin === "upstream",
-      );
-    },
-  },
+  ...inceptionRules,
+  ...perchRules,
   {
     name: "rate-limit",
     match: (s) =>
@@ -1682,34 +1649,6 @@ const ACCOUNT_ERROR_RULES: readonly AccountErrorRule[] = [
         new Date(Date.now() + cooldownMs),
         s.reason("Model unreachable for this account"),
         modelScopedMutation,
-      );
-    },
-  },
-  {
-    // Qoder closes an exhausted-quota stream with upstream 499 (nginx
-    // client-close style). The gateway's own aborts are local `transport_closed`
-    // and never carry a qoder providerId, so a 499 scoped to qoder is a quota
-    // verdict, not a transport fault. It must run before `transport-fault`,
-    // which otherwise reads the status as a 5xx-class outage and cools the
-    // account for the shorter transient window — or leaves it unmutated.
-    //
-    // The verdict is per-model, like Qoder's other quota signs: one model's
-    // spend cap does not drain another, so it cools the pair, never the whole
-    // account.
-    name: "qoder-499-quota",
-    match: (s) =>
-      (s.providerId === "qoder" || s.providerId === "qodercn") &&
-      s.statusCode === 499 &&
-      s.origin === "upstream",
-    decide: (s) => {
-      const cooldownMs = s.statedCooldownMs ?? QODER_QUOTA_COOLDOWN_MS;
-      return s.result(
-        "model_unreachable",
-        "cooldown",
-        cooldownMs,
-        new Date(Date.now() + cooldownMs),
-        s.reason("Qoder quota exhausted for this model (upstream 499)"),
-        s.origin === "upstream" && s.modelId !== undefined,
       );
     },
   },

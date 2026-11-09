@@ -80,7 +80,17 @@ function replaceImagePartsWithText(
     }
     const hasImage = message.content.some(isImageOrPlaceholderPart);
     if (!hasImage) return message;
-    return { ...message, content: message.content.filter((part) => !isImageOrPlaceholderPart(part)) };
+    // Never delete images silently (proposal Option E): replace a dropped
+    // older image with a marker so the main model at least knows something
+    // was there, instead of the loss being invisible.
+    return {
+      ...message,
+      content: message.content.flatMap((part) =>
+        isImageOrPlaceholderPart(part)
+          ? [{ kind: "text" as const, text: "[image omitted]" }]
+          : [part],
+      ),
+    };
   });
   const unchangedMessages = nextMessages.every(
     (message, i) => message === request.messages[i],
@@ -474,6 +484,7 @@ export class ProxyRequestPreparer {
           allowCliMappings,
           authorization.cliMappingOwnerId ?? authorization.id,
           continuationAffinity,
+          request.conversation_id ?? request.conversation?.conversation_id,
         );
       } catch (error) {
         // `plan()` collapses "no candidate supports this capability" into
@@ -541,6 +552,7 @@ export class ProxyRequestPreparer {
                   allowCliMappings,
                   authorization.cliMappingOwnerId ?? authorization.id,
                   continuationAffinity,
+                  request.conversation_id ?? request.conversation?.conversation_id,
                 );
                 plan = handoffPlan;
                 variantRequest = replaced;
@@ -725,6 +737,8 @@ export class ProxyRequestPreparer {
     readonly clientUserAgent?: string;
     readonly eligible: (candidate: RouteCandidate) => boolean;
     readonly emptyMessage: string;
+    /** Session identity for sticky routing (conversation id when present). */
+    readonly conversationId?: string;
   }): Promise<PreparedNativeRequest> {
     if (input.signal?.aborted)
       throw new GatewayError("transport_closed", 499, "The request was cancelled (request {requestId}). Send it again whenever ready 🙃");
@@ -768,6 +782,8 @@ export class ProxyRequestPreparer {
       undefined,
       allowCliMappings,
       input.authorization.cliMappingOwnerId ?? input.authorization.id,
+      undefined,
+      input.conversationId,
     );
     if (input.signal?.aborted)
       throw new GatewayError("transport_closed", 499, "The request was cancelled (request {requestId}). Send it again whenever ready 🙃");

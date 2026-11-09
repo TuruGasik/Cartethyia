@@ -32,10 +32,64 @@ const CARD_LINK = cn("block flex-1 p-6 no-underline text-inherit");
 
 const CARD_NAME = cn("text-body font-semibold overflow-hidden text-ellipsis whitespace-nowrap");
 
+/**
+ * Diagonal corner ribbon shared by the Friend sponsor mark and the Disabled
+ * status mark. Same geometry as the founding ribbon so the cards stay one
+ * visual family; only the tone and label change.
+ */
+function CornerRibbon({
+  label,
+  title,
+  tone,
+}: {
+  readonly label: string;
+  readonly title: string;
+  readonly tone: "accent" | "danger";
+}): ReactNode {
+  return (
+    <span
+      aria-label={title}
+      title={title}
+      className="absolute top-0 right-0 z-2 w-36 h-36 overflow-hidden pointer-events-none"
+    >
+      <span
+        className={cn(
+          // DISABLED is two letters longer than Friend, so the danger arm is a
+          // touch wider; the clip box stays the same so the corner cut is
+          // identical across both marks.
+          tone === "danger"
+            ? "absolute top-9 -right-13 w-44 py-1 rotate-45 bg-red-soft text-red"
+            : "absolute top-9 -right-11 w-38 py-1 rotate-45 bg-accent-soft text-accent",
+          "text-micro font-extrabold tracking-tight leading-[1.05]",
+          "text-center uppercase shadow-ribbon",
+        )}
+      >
+        {label}
+      </span>
+    </span>
+  );
+}
+
 import type {
   CreateProviderRequest,
   ProviderResponse,
 } from "../../data/contracts";
+import type { ServiceKind } from "../../../../src/protocol/canonical-model";
+
+/** Advanced capability kinds offered in the Add Custom Provider modal. */
+const ADVANCED_KIND_OPTIONS: readonly { readonly kind: ServiceKind; readonly label: string }[] = [
+  { kind: "imageGeneration", label: "Image generation" },
+  { kind: "videoGeneration", label: "Video generation" },
+  { kind: "embedding", label: "Embeddings" },
+  { kind: "audioSpeech", label: "Speech synthesis (TTS)" },
+  { kind: "audioTranscription", label: "Audio transcription (STT)" },
+  { kind: "websearch", label: "Web search" },
+  { kind: "systemone", label: "System One (native routing)" },
+];
+
+function serviceKindLabel(kind: ServiceKind): string {
+  return ADVANCED_KIND_OPTIONS.find((entry) => entry.kind === kind)?.label ?? kind;
+}
 import {
   useCreateProvider,
   useCreateProviderAccount,
@@ -122,6 +176,11 @@ function AddCompatibleModal({
     warning?: string;
   } | null>(null);
   const [testing, setTesting] = useState(false);
+  // Advanced capabilities: the operator opts into every non-agentic surface
+  // their upstream actually answers. Default is agentic only — the modal
+  // saves a list, not per-toggle churn.
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [serviceKinds, setServiceKinds] = useState<readonly ServiceKind[]>(["llm"]);
 
   const isAnthropic = variant === "anthropic-compatible";
   const defaultWire: WireFamily = isAnthropic ? "messages" : "chat";
@@ -140,6 +199,8 @@ function AddCompatibleModal({
     setHeaderPairs([]);
     setError(null);
     setTestResult(null);
+    setAdvancedOpen(false);
+    setServiceKinds(["llm"]);
   }, [open]);
 
   const pasteInto = async (setter: (value: string) => void) => {
@@ -207,6 +268,10 @@ function AddCompatibleModal({
 
     const extraHeaders = pairsToHeaders(headerPairs);
     const id = providerId.trim().toLowerCase();
+    // Advanced capabilities: send the narrowed kind list only when the
+    // operator opened the section and changed it. Absent = the historical
+    // default (every kind enabled).
+    const advancedKinds = advancedOpen ? serviceKinds : undefined;
 
     setSubmitting(true);
     setError(null);
@@ -218,6 +283,7 @@ function AddCompatibleModal({
         wireFamily,
         compatibilityProfile: {
           cli_identity: sendCliIdentity,
+          ...(advancedKinds !== undefined ? { service_kinds: advancedKinds } : {}),
           ...(Object.keys(extraHeaders).length > 0 ? { extra_headers: extraHeaders } : {}),
         },
       };
@@ -376,6 +442,60 @@ function AddCompatibleModal({
           </div>
         </ListRow>
         <ListRow
+          actions={
+            <Button
+              type="button"
+              variant="secondary"
+              size="sm"
+              onClick={() => setAdvancedOpen((open) => !open)}
+              aria-expanded={advancedOpen}
+            >
+              {advancedOpen ? "Done" : "Configure"}
+            </Button>
+          }
+        >
+          <div>
+            <div className="text-body font-semibold">Advanced capabilities</div>
+            <div className="mt-1 text-badge text-text-tertiary">
+              {advancedOpen
+                ? "Check the surfaces this upstream answers. Agentic (LLM) is always on."
+                : serviceKinds.length > 1
+                  ? `${serviceKinds.length - 1} enabled · ${serviceKinds
+                      .filter((kind) => kind !== "llm")
+                      .map(serviceKindLabel)
+                      .join(", ")}`
+                  : "Agentic only (LLM) — enable image, video, embeddings, and audio here"}
+            </div>
+          </div>
+        </ListRow>
+        {advancedOpen ? (
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 rounded-control border border-inner-border bg-surface-1 p-4">
+            {ADVANCED_KIND_OPTIONS.map((entry) => {
+              const checked = serviceKinds.includes(entry.kind);
+              return (
+                <label
+                  key={entry.kind}
+                  className="flex items-center gap-2.5 cursor-pointer text-caption text-text-secondary"
+                >
+                  <input
+                    type="checkbox"
+                    className="cursor-pointer"
+                    checked={checked}
+                    onChange={() =>
+                      setServiceKinds((prev) =>
+                        checked
+                          ? prev.filter((kind) => kind !== entry.kind)
+                          : [...prev, entry.kind],
+                      )
+                    }
+                  />
+                  <span>{entry.label}</span>
+                </label>
+              );
+            })}
+          </div>
+        ) : null}
+        <ListRow
           actions={<Switch checked={sendCliIdentity} onChange={setSendCliIdentity} id="compat-cli-identity" />}
         >
           <div>
@@ -411,6 +531,9 @@ function CustomProviderCard({ customProvider }: { customProvider: ProviderRespon
       className={CARD_SHELL}
     >
       <ProviderVersionBadge clientVersion={customProvider.clientVersion} />
+      {!customProvider.enabled ? (
+        <CornerRibbon label="Disabled" title="Provider disabled" tone="danger" />
+      ) : null}
       <Link
         to={`/providers/${encodeURIComponent(customProvider.providerId)}`}
         // See the builtin card: `flex: 1` keeps the clickable area as tall as
@@ -671,6 +794,12 @@ const FREE_LIMITED_IDS = new Set([
   "inception",
   // ZCode Start exposes account-specific, time-limited GLM grants.
   "zcode-start",
+  // Free-pi is ad-funded: a daily USD/credit allowance (guest or GitHub
+  // sign-in), with a small set of "Free Unlimited" rows on the free tier.
+  "freepi",
+  // Perch Starter is free with a Google/GitHub sign-in: Roost Standard and
+  // Standard 1M tiers, a $20/month included-usage allowance.
+  "perch",
 ]);
 /**
  * The providers an operator reaches for first: household names with a
@@ -798,27 +927,17 @@ const ProviderCard = memo(function ProviderCard({
   const displayName = provider.label || provider.displayName;
   // Connection counts and the model badge come from the provider-list overview
   // fields, so this card issues no per-provider accounts/models request.
+  // Disabled wins over Friend: a parked founding provider must still read as
+  // disabled at a glance, or the operator forgets why it stopped routing.
   return (
     <Card
       className={CARD_SHELL}
     >
       <ProviderVersionBadge clientVersion={provider.clientVersion} />
-      {isFounding ? (
-        <span
-          aria-label="Friend sponsor"
-          title="Friend sponsor"
-          className="absolute top-0 right-0 z-2 w-36 h-36 overflow-hidden pointer-events-none"
-        >
-          <span
-            className={cn(
-              "absolute top-9 -right-11 w-38 py-1 rotate-45 bg-accent-soft",
-              "text-accent text-micro font-extrabold tracking-tight leading-[1.05]",
-              "text-center uppercase shadow-ribbon",
-            )}
-          >
-            Friend
-          </span>
-        </span>
+      {!provider.enabled ? (
+        <CornerRibbon label="Disabled" title="Provider disabled" tone="danger" />
+      ) : isFounding ? (
+        <CornerRibbon label="Friend" title="Friend sponsor" tone="accent" />
       ) : null}
 
       <Link

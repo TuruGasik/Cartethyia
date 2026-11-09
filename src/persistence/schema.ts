@@ -219,8 +219,8 @@ export interface NativeIdentityRecord {
   readonly machineCode: string;
   /** The seed-file content this identity was minted from, if captured. */
   readonly seed?: string;
-  /** How this identity was produced: the genuine SG bridge or the fallback. */
-  readonly source?: "runtime-info" | "generated";
+  /** How this identity was produced: the genuine SG bridge, the OS fingerprint, or the fallback. */
+  readonly source?: "runtime-info" | "generated" | "os";
 }
 
 export const providerAccounts = pgTable("provider_accounts", {
@@ -309,6 +309,14 @@ export const providerAccounts = pgTable("provider_accounts", {
    * to an account that may well be refused.
    */
   quotaPlan: text("quota_plan"),
+  /**
+   * When `quota_plan` was last written by a successful quota read.
+   *
+   * The plan column is a bare string with no timestamp, so routing cannot tell
+   * a fresh plan from one recorded weeks ago. With the freshness horizon, a
+   * stale plan is downgraded to `unknown` instead of being trusted blindly.
+   */
+  quotaPlanFetchedAt: timestamp("quota_plan_fetched_at", { withTimezone: true }),
   /**
    * The last successful quota read for this account, as a JSON snapshot.
    *
@@ -432,6 +440,11 @@ export const models = pgTable(
     reasoning: boolean("reasoning").notNull().default(false),
     toolCall: boolean("tool_call").notNull().default(false),
     cost: jsonb("cost"),
+    // Display-only warning metadata for this row: Postgres `jsonb` (SQLite
+    // `text` carrying the JSON string), nullable, `NULL` = no warnings. Shape:
+    // `{ warnings: [{ kind, message, severity?, updatedAt? }] }`. Part of the
+    // provider-account model-update proposal §3.4 area 06; not read by routing.
+    warningMetadata: jsonb("warning_metadata"),
     source: text("source"),
     sourceUpdatedAt: timestamp("source_updated_at", { withTimezone: true }),
     enabled: boolean("enabled").notNull().default(true),
@@ -1288,6 +1301,19 @@ export interface ConsoleSettingsPreferences {
    * placeholder behavior.
    */
   visionHandoffModels?: readonly string[];
+  /**
+   * Auto-disable provider accounts that keep failing with upstream rate-limit
+   * or quota verdicts. Off by default: without it, those failures land on a
+   * per-model/account cooldown and the account stays rotatable.
+   */
+  autoDisableRateLimited?: boolean;
+  /**
+   * Modelprobe mode: `detail` (full identity probe) or `fast` (minimal
+   * 32-token check). `detail` when unset.
+   */
+  modelProbeMode?: "fast" | "detail";
+  /** Fast-probe timeout in seconds; `null`/absent means the built-in default (10). */
+  modelProbeFastTimeoutSeconds?: number | null;
 }
 
 export const consoleSettings = pgTable("console_settings", {

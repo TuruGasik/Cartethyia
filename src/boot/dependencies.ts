@@ -62,7 +62,7 @@ import {
 } from "../workers/buddy-growth-tasks";
 import { createAccountSecretResolver } from "../providers/operations/provider-credential-service";
 import { quotaCacheSize } from "../providers/quota/cache";
-import { modelCatalogCacheSize } from "../providers/operations/model-catalog-cache";
+import { modelCatalogCacheSize } from "../providers/operations/provider-caches";
 import { preferencesReaderFor } from "../persistence/tenant-preferences";
 import { sweepExpiredCooldowns } from "../providers/operations/account-health-service";
 import { DrizzleTelemetryStore } from "../persistence/stores/telemetry-store";
@@ -613,13 +613,13 @@ export async function buildProductionDeps(): Promise<ProductionDeps> {
   // first open after an expiry always blocks on the provider.
   //
   // It also carries the daily check-in ride-along: each account refreshed
-  // here gets its once-per-day WorkBuddy/CodeBuddy credit grant claimed in
+  // here gets its once-per-day CodeBuddy credit grant claimed in
   // the same pass (one attempt per account per day, guarded by a day
   // marker), so no second timer duplicates the credential resolution.
   //
   // Registered in **every** mode, not only when Redis is present: gating it on
   // Redis would cost Lite proactive quota warming and the check-in ride-along
-  // above that claims the once-per-day WorkBuddy/CodeBuddy credit grant. The
+  // above that claims the once-per-day CodeBuddy credit grant. The
   // whole sweep chain accepts `RedisClient | undefined` and falls back to the
   // in-process TTL cache and an in-process day marker, so Redis is an
   // optimization here rather than a precondition — which is exactly what

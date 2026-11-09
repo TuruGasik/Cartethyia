@@ -82,6 +82,10 @@ tenant data.
   breakdown tab per member. It comes from `console/observability/usage-dimensions`, a module
   with no imports, rather than from `observability/contracts`, which imports Elysia and reaches
   `node:crypto` through the console error path.
+- `src/data/contracts.ts` re-exports `DISCOVER_MODEL_COMMIT_MAX` from the import-free
+  `console/providers/catalog/discovery-limits` module. The model picker, route schema,
+  and server operation share this cap without importing catalog validation and its
+  server-only header/CSP dependencies into the browser.
 - `src/data/usage-periods.json` is a small static dashboard data file. Keep its
   values aligned with the backend usage-period contract when that contract changes.
 - Query keys, hooks, and route components must use the existing `consoleRequest`

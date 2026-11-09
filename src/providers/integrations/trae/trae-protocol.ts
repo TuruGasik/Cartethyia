@@ -8,9 +8,6 @@
 // 2. Message `content` must be an array of parts. A plain string is refused
 //    (400/4001), so every message is normalized to parts even when there is
 //    only text.
-//
-// Sourced from the donor hub `Public/trae2api-hub` (`build_chat_body` and
-// `iter_events` in `trae_client.py`).
 
 import type { CanonicalRequest, ContentPart } from "../../../protocol/canonical-model";
 import { resolveWireMaxTokens } from "../../../protocol/translation/quirks";
@@ -79,9 +76,9 @@ export interface TraeToolCall {
 /**
  * Generation fields upstream accepts.
  *
- * Undeclared fields are deliberately omitted: the donor notes that sending
- * anything outside this set risks a 4001, so `provider_options` is never
- * spread into the body wholesale.
+ * Undeclared fields are deliberately omitted: sending anything outside this
+ * set risks a 4001, so `provider_options` is never spread into the body
+ * wholesale.
  */
 const PASSTHROUGH_OPTIONS = ["temperature", "top_p", "max_tokens", "stop"] as const;
 
@@ -190,7 +187,7 @@ export function buildTraeChatBody(
     }
     const parts: TraeContentPart[] = [];
     const toolCalls: TraeToolCall[] = [];
-    let toolResult: { callId: string; text: string } | undefined;
+    const toolResults: Array<{ callId: string; text: string }> = [];
     for (const part of message.content) {
       if (part.kind === "toolCall") {
         toolCalls.push({
@@ -201,7 +198,7 @@ export function buildTraeChatBody(
         continue;
       }
       if (part.kind === "toolResult") {
-        toolResult = { callId: part.call_id, text: toolResultText(part.content) };
+        toolResults.push({ callId: part.call_id, text: toolResultText(part.content) });
         continue;
       }
       const mapped = toTraePart(part);
@@ -210,15 +207,19 @@ export function buildTraeChatBody(
 
     // A tool answer becomes its own `tool` turn, which is the only shape
     // upstream accepts for it — leaving it inside the assistant turn is
-    // rejected as a broken tool sequence.
-    if (toolResult !== undefined) {
+    // rejected as a broken tool sequence. One turn per result: a message
+    // whose content carries multiple `toolResult` parts (parallel tool calls)
+    // must emit one `tool` turn per call id, or upstream rejects the missing
+    // ones with `tool call failed: … No tool output found for function call
+    // <id>`.
+    for (const toolResult of toolResults) {
       messages.push({
         role: "tool",
         content: [{ type: "text", text: toolResult.text }],
         tool_call_id: toolResult.callId,
       });
-      continue;
     }
+    if (toolResults.length > 0) continue;
     // Empty turns are skipped: upstream rejects them, and emitting
     // `content: ""` turns leaves a ghost turn in the conversation.
     if (parts.length === 0 && toolCalls.length === 0) continue;

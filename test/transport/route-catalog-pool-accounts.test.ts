@@ -91,34 +91,43 @@ dbDescribe("route catalog pool accounts", () => {
 
   test("emits one candidate per pool-account, not one multi-pool candidate", async () => {
     const { poolId } = await insertOpencodeWithPool("active");
+    const { poolId: secondPoolId } = await insertOpencodeWithPool("active");
     const snapshot = (await createDatabaseSnapshotBuilder(getDb())()) as unknown as {
       readonly candidates?: readonly Record<string, unknown>[];
     };
     const opencodeCandidates = (snapshot.candidates ?? []).filter(
-      (candidate) => candidate["provider_id"] === "opencode",
+      (candidate) =>
+        candidate["provider_id"] === "opencode" &&
+        candidate["model_id"] === "deepseek-v4.1-flash-free" &&
+        candidate["tenant_id"] === world.tenantId,
     );
-    expect(opencodeCandidates.length).toBeGreaterThan(0);
+    expect(opencodeCandidates).toHaveLength(2);
     // Each candidate is tied to exactly one pool.
     for (const candidate of opencodeCandidates) {
       expect(candidate["requires_account"]).toBe(false);
       const poolIds = candidate["network_pool_ids"] as readonly string[] | undefined;
       expect(poolIds).toBeDefined();
       expect(poolIds?.length).toBe(1);
-      expect(poolIds?.[0]).toBe(poolId);
     }
+    expect(
+      new Set(opencodeCandidates.map((candidate) => (candidate["network_pool_ids"] as readonly string[])[0])),
+    ).toEqual(new Set([poolId, secondPoolId]));
   });
 
   test("a cooling pool-account marks the candidate cooldown, like a cooling account", async () => {
-    await insertOpencodeWithPool("cooldown");
+    const { poolId } = await insertOpencodeWithPool("cooldown");
     const snapshot = (await createDatabaseSnapshotBuilder(getDb())()) as unknown as {
       readonly candidates?: readonly Record<string, unknown>[];
     };
     const coolingCandidate = (snapshot.candidates ?? []).find(
       (candidate) =>
         candidate["provider_id"] === "opencode" &&
-        candidate["health_status"] === "cooldown",
+        candidate["model_id"] === "deepseek-v4.1-flash-free" &&
+        candidate["tenant_id"] === world.tenantId &&
+        (candidate["network_pool_ids"] as readonly string[] | undefined)?.includes(poolId),
     );
     expect(coolingCandidate).toBeDefined();
+    expect(coolingCandidate?.["health_status"]).toBe("cooldown");
     expect(coolingCandidate?.["network_pool_ids"]).toBeDefined();
     expect((coolingCandidate?.["network_pool_ids"] as readonly string[]).length).toBe(1);
   });

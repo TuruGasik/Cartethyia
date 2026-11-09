@@ -6,7 +6,7 @@
  * breaks ties inside one rank. Quota is not an eligibility exclusion: known-zero
  * accounts stay routed and are only ordered after unknown/positive.
  */
-import { expect, test } from "bun:test";
+import { describe, expect, test } from "bun:test";
 import { RoutingEngine } from "../../src/transport/routing/router";
 import { sharedClaudeSlowLanes } from "../../src/providers/integrations/claude/claude-slow-lane";
 import type { RouteCandidate, RouteSnapshot } from "../../src/transport/routing/route-model";
@@ -66,7 +66,7 @@ test("accounts with remaining credit are ordered before unknown-quota accounts",
   expect(order).toEqual(["a-credit", "a-unknown"]);
 });
 
-test("a known-zero credit account is ordered after unknown, never excluded", async () => {
+test("a known-zero credit account without a limit is available and ranks as FRESH_KNOWN", async () => {
   const order = await plannedOrder(
     snapshot([
       candidate("a-zero", { quota_windows: [creditWindow(0)] }),
@@ -74,9 +74,9 @@ test("a known-zero credit account is ordered after unknown, never excluded", asy
     ]),
     "qoder-model",
   );
-  // Quota is not an eligibility exclusion anymore: the zero-credit account is
-  // still routed, but credit priority puts the unknown (neutral) account first.
-  expect(order).toEqual(["a-unknown", "a-zero"]);
+  // remaining=0 without a limit: not provably exhausted → quotaState "available" → FRESH_KNOWN.
+  // A no-windows account is FRESH_UNKNOWN, so FRESH_KNOWN ranks first.
+  expect(order).toEqual(["a-zero", "a-unknown"]);
 });
 
 test("a free-tier model routes even when its own quota window is exhausted", async () => {
@@ -105,7 +105,7 @@ test("a free-tier model ignores the operator floor threshold entirely", async ()
   expect(order).toEqual(["a-above-floor-free", "a-exhausted-free"]);
 });
 
-test("a free-tier model routes to any account (no credit preference)", async () => {
+test("a free-tier model routes to any account; known-available ranks before unknown", async () => {
   const order = await plannedOrder(
     snapshot([
       candidate("a-unknown", { free_tier: true }),
@@ -113,8 +113,10 @@ test("a free-tier model routes to any account (no credit preference)", async () 
     ]),
     "qoder-model",
   );
-  // Credit would put a-credit first; a free model keeps the original order.
-  expect(order).toEqual(["a-unknown", "a-credit"]);
+  // Both are free-tier: credit priority is skipped within the same rank.
+  // But a-credit (FRESH_KNOWN, available) outranks a-unknown (FRESH_UNKNOWN),
+  // so it routes first regardless of original position.
+  expect(order).toEqual(["a-credit", "a-unknown"]);
 });
 
 test("credit only breaks ties inside a rank; slow-lane still orders after fresh", async () => {
@@ -145,4 +147,42 @@ test("credit only breaks ties inside a rank; slow-lane still orders after fresh"
       unifiedResetAtSec: Math.floor(Date.now() / 1000) + 3600,
     });
   }
+});
+
+describe("unregistered model passthrough", () => {
+  test("a qualified provider/model not in the catalog routes via the provider's sibling candidate", async () => {
+    // `qoder/not-in-catalog` is absent from the snapshot, but `qoder` has a
+    // live candidate for another model. The engine clones that candidate and
+    // retargets it at the requested model so the request still dispatches.
+    const order = await plannedOrder(
+      snapshot([candidate("a-1")]),
+      "qoder/not-in-catalog",
+    );
+    expect(order).toEqual(["a-1"]);
+  });
+
+  test("the cloned candidate carries the requested model id", async () => {
+    const engine = new RoutingEngine();
+    const plan = await engine.plan(
+      "qoder/not-in-catalog",
+      snapshot([candidate("a-1")]),
+    );
+    expect(plan.resolved_model).toBe("qoder/not-in-catalog");
+    expect(plan.candidates[0]?.model_id).toBe("not-in-catalog");
+    expect(plan.candidates[0]?.provider_id).toBe("qoder");
+  });
+
+  test("a bare model not in the catalog still 404s", async () => {
+    const engine = new RoutingEngine();
+    await expect(
+      engine.plan("not-in-catalog", snapshot([candidate("a-1")])),
+    ).rejects.toMatchObject({ code: "model_not_found" });
+  });
+
+  test("a qualified provider with no candidates at all still 404s", async () => {
+    const engine = new RoutingEngine();
+    await expect(
+      engine.plan("unknown-provider/anything", snapshot([candidate("a-1")])),
+    ).rejects.toMatchObject({ code: "model_not_found" });
+  });
 });

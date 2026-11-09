@@ -38,7 +38,6 @@ import { createAuditRoutes } from "./audit/routes";
 import { DrizzleAuditReadStore } from "./audit/store";
 import { createIpBanRoutes } from "./ip-bans/routes";
 import type { IpAbuseStore } from "../security/abuse";
-import { createPerformanceRoutes } from "./observability/performance";
 import { createUpdateRoutes } from "./updates/routes";
 import { createRemoteSupportRoutes } from "./remote-support/routes";
 import { createRemoteSupportService } from "./remote-support/service";
@@ -57,6 +56,7 @@ import {
   createAccountExportCredentialsResolver,
   createAccountSecretResolver,
 } from "../providers/operations/provider-credential-service";
+import { refreshAccountStatus } from "../providers/operations/account-refresh-status";
 import { syncByokProvider } from "../providers/operations/provider-catalog-service";
 import { DrizzleApiKeyStore } from "../persistence/stores/api-key-store";
 import {
@@ -166,6 +166,17 @@ export function registerConsoleDomains(
     resolveRefresher: (id) => ctx.providerRegistry.resolveRefresher(id),
     refreshService: ctx.oauthRefreshService,
   });
+  /** Manual OAuth token refresh for the catalog route (area 04). */
+  const refreshAccountStatusForConsole = (accountId: string, opts?: { readonly origin?: "ui" | "sweep" | "dispatch" }) =>
+    refreshAccountStatus(
+      {
+        db: ctx.db,
+        refreshService: ctx.oauthRefreshService,
+        resolveRefresher: (id) => ctx.providerRegistry.resolveRefresher(id),
+      },
+      accountId,
+      opts,
+    );
   const providerCatalogStore = new DrizzleProviderCatalogStore(ctx.db, {
     telemetryBuffer: ctx.telemetryBuffer,
     bundledModelCatalog: ctx.bundledModelCatalog,
@@ -245,6 +256,7 @@ export function registerConsoleDomains(
       };
     },
     snapshotInvalidator: ctx.routeSnapshotService,
+    redis: ctx.redis,
     readAccountInflight: async (providerId, tenantId) =>
       ctx.readRoutingAccountInflight ? ctx.readRoutingAccountInflight(providerId, tenantId) : [],
   });
@@ -265,7 +277,6 @@ export function registerConsoleDomains(
     ...(ctx.stateStore ? { stateStore: ctx.stateStore } : {}),
   }));
   console.use(createLogRoutes({ accessResolver: ctx.accessResolver, auditSink: ctx.auditRecorder }));
-  console.use(createPerformanceRoutes({ accessResolver: ctx.accessResolver }));
   console.use(createUpdateRoutes({
     accessResolver: ctx.accessResolver,
     observabilityStore,
@@ -300,6 +311,7 @@ export function registerConsoleDomains(
     redis: ctx.redis,
     snapshotInvalidator: ctx.routeSnapshotService,
     resolveExportCredentials,
+    refreshAccountStatus: refreshAccountStatusForConsole,
     // Without this, a custom provider only becomes dispatchable after a
     // restart: boot registers BYOK rows once, and the catalog routes are the
     syncByokProvider: (providerId) =>
