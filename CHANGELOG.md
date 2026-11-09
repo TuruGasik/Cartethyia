@@ -66,6 +66,7 @@ is a retryable/eligible category, not an error pill.
 
 ### Fixed
 
+- Docker builds no longer require the removed WorkBuddy TuringShield SDK files.
 - Keep the shared model-discovery limit import-free so the dashboard does not
   load backend header-security code or Node crypto through API contracts.
 - Preserve Commandcode cache-read/write and reasoning token usage, including on
