@@ -185,7 +185,7 @@ describe("commandcode Go-plan dispatch", () => {
     };
   }
 
-  test("uses the CLI endpoint and one stable session id per conversation", async () => {
+  test.each(["conv-1", "11111111-1111-4111-8111-111111111111"])("keeps session %s stable with a valid UUID thread", async (conversationId) => {
     const seen: Array<{ url: string; sessionId: string | null; body: Record<string, unknown> }> = [];
     const adapter = createCommandCodeAdapter({
       fetch: (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -204,7 +204,7 @@ describe("commandcode Go-plan dispatch", () => {
 
     for (const wire of ["chat", "responses", "messages"] as const) {
       for await (const _event of adapter.dispatch(
-        { ...REQUEST, model: "public-model-alias", conversation_id: "conv-1" },
+        { ...REQUEST, model: "public-model-alias", conversation_id: conversationId },
         dispatchTarget(wire),
         context,
       )) {
@@ -215,10 +215,10 @@ describe("commandcode Go-plan dispatch", () => {
     expect(seen).toHaveLength(3);
     for (const request of seen) {
       expect(request.url).toBe(`${COMMANDCODE_HOST}${COMMANDCODE_GENERATE_PATH}`);
-      // The session id is the conversation's: every wire family of one
-      // conversation presents the same `x-session-id` and `threadId`.
-      expect(request.sessionId).toBe("conv-1");
-      expect(request.body["threadId"]).toBe("conv-1");
+      expect(request.sessionId).toBe(conversationId);
+      expect(request.body["threadId"]).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
+      expect(request.body["threadId"]).toBe(seen[0]?.body["threadId"]);
+      if (conversationId !== "conv-1") expect(request.body["threadId"]).toBe(conversationId);
       expect(request.body["memory"]).toBeNull();
       expect(request.body["config"]).toBeTruthy();
       expect(request.body["params"]).toMatchObject({
@@ -260,8 +260,7 @@ describe("commandcode Go-plan dispatch", () => {
 
     expect(seen).toHaveLength(1);
     expect(seen[0]?.sessionId).toBeNull();
-    expect(typeof seen[0]?.body["threadId"]).toBe("string");
-    expect((seen[0]?.body["threadId"] as string).length).toBeGreaterThan(0);
+    expect(seen[0]?.body["threadId"]).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
   });
 });
 

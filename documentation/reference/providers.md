@@ -205,6 +205,9 @@ is not rewritten.
 The `/alpha/generate` transport caps requested output and bundled/discovered
 model output limits at 200,000 tokens. Smaller limits and upstream context
 windows remain unchanged; discovery retains the provider's wire family.
+Conversation session headers retain the caller's identity. The envelope uses
+that identity directly when it is a valid UUID, otherwise a stable UUID-shaped
+hash; requests without a conversation receive a fresh UUID thread.
 
 `zcode-start` (displayed as **ZCode Start**) is separate from `zcode` (the regular Z.AI Coding Plan). Sign in
 with its device flow or import the ZCode login JWT; a Coding Plan API key or

@@ -16,6 +16,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
   reasoning details, and unknown usage instead of synthesizing zero cache hits.
   The refreshed bundled roster and discovery share the generation transport's
   200,000-token ceiling while retaining smaller model limits.
+- Commandcode maps non-UUID conversation identities to stable UUID threads,
+  preventing upstream `Invalid UUID at "threadId"` refusals while preserving
+  the caller's session header and already-valid UUIDs.
 - Keep ZCode billing/gift identity at 3.17.2 independently of the captured
   generation prompt/version pair; retain compact grant headings without model
   captions and with lowercase periods in parentheses.

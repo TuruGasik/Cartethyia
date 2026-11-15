@@ -1,6 +1,6 @@
 // Factory-blocked (Phase C4): proprietary `{threadId, config, params}`
 // envelope with NDJSON stream transform — non-OpenAI wire; stays bespoke.
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { GatewayError } from "../../../protocol/gateway-error";
 import { canContainToolResult, joinTextParts, toolCallParts, toolResultParts } from "../../../protocol/canonical-model";
 import {
@@ -650,18 +650,22 @@ class CommandCodeAdapter implements ProviderAdapter {
     context: ProviderDispatchContext,
   ): AsyncIterable<CanonicalEvent> {
     const token = readCredentialSecret(context.credential, "Command Code bearer token is required");
-    // The session id is the conversation's, not the request's: it doubles as
-    // the envelope's `threadId`, and a per-request UUID filed every turn of one
-    // conversation under a different session — the shape the client avoids by
-    // omitting `x-session-id` rather than inventing one. With no derivable
-    // conversation the header is omitted; the envelope still requires a
-    // threadId, so a fresh one is minted for that case alone.
+    // Preserve caller session affinity; the generation envelope requires a UUID thread.
     const sessionId =
       request.conversation?.conversation_id ??
       request.conversation_id ??
       resolveInboundSessionId(context, request) ??
       "";
-    const threadId = sessionId.length > 0 ? sessionId : randomUUID();
+    let threadId: string;
+    if (sessionId.length === 0) threadId = randomUUID();
+    else if (/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(sessionId)) threadId = sessionId;
+    else {
+      const bytes = createHash("sha256").update(`commandcode-thread\0${sessionId}`).digest().subarray(0, 16);
+      bytes[6] = (bytes[6]! & 0x0f) | 0x40;
+      bytes[8] = (bytes[8]! & 0x3f) | 0x80;
+      const hex = bytes.toString("hex");
+      threadId = `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+    }
     const payload = buildRequest(candidate.model_id, {
       messages: request.messages,
       tools: (request.tools ?? []).map(({ name, description, jsonSchema }) => ({ name, description, jsonSchema })),
