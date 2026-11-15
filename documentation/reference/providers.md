@@ -198,6 +198,14 @@ spendable balance.
 An upstream reset timestamp of zero means no reset deadline is available, not
 a reset in January 1970.
 
+Usage prefers final NDJSON `finish.totalUsage`, falling back to the last step.
+AI SDK cache-read/write and reasoning details are preserved; missing details
+remain unknown, while an explicit zero remains zero. Previously recorded usage
+is not rewritten.
+The `/alpha/generate` transport caps requested output and bundled/discovered
+model output limits at 200,000 tokens. Smaller limits and upstream context
+windows remain unchanged; discovery retains the provider's wire family.
+
 `zcode-start` (displayed as **ZCode Start**) is separate from `zcode` (the regular Z.AI Coding Plan). Sign in
 with its device flow or import the ZCode login JWT; a Coding Plan API key or
 the short-lived Z.AI access token is not interchangeable. There is no refresh
@@ -205,6 +213,11 @@ grant: sign in again if the session is expired or revoked. Requests use
 `https://zcode.z.ai/api/v1/zcode-plan/anthropic/v1/messages`, bearer auth,
 ZCode identity headers and the three-block client prompt. Caller instructions
 are appended inside the third block, not discarded or sent as a fourth block.
+
+Start Plan generation uses identity **3.14.5** paired with the captured
+three-block prompt. Quota and gift requests use app identity **3.17.2** through
+the shared Z.AI billing headers and a stable per-account device ID. Updating
+billing identity does not update the generation prompt/version pair.
 
 Quota reads `GET /api/v1/zcode-plan/billing/balance`. Each balance keeps its
 `capabilities` model IDs, owning `user_plan_id`/`plan_id`, entitlement period,
@@ -214,10 +227,10 @@ unrelated model. Future grants show **Not started yet** and their start time,
 but cannot fund requests. Expired grants cannot fund requests even if their
 last reported remaining amount was positive. Missing usage is unknown, not zero.
 The dashboard summarizes multiple Start Plan grants as **Start +N** (no popup),
-with full upstream names in the badge title. Window headings show grant and
-period without a model caption. Known names are displayed as **Start** and
-**Global Build**; other promo/referral names remain unchanged. Stored quota
-and routing identities are not renamed. Future windows stay visible.
+with full upstream names in the badge title. Window headings use **Start (daily)**,
+**Referral Global (nightly)** or **Referral Weekend (one-time)** without model
+names. Known package names omit the ZCode prefix; unknown promo names remain
+unchanged. Stored quota and routing identities are not renamed. Future windows stay visible.
 Timeout, network and unreadable-JSON quota failures remain distinct; a timeout
 does not advance the account failure streak.
 A successful balance is authoritative: a model with no matching grant is not

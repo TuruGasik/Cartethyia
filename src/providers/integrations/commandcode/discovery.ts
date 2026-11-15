@@ -1,7 +1,7 @@
 /**
  * Command Code model discovery, read from the Provider API.
  *
- * The Provider API publishes the real roster — 95 rows, each stating
+ * The Provider API publishes the real roster, each row stating
  * `context_length` and `supported_endpoints` — so this reads what the provider
  * actually serves rather than a hand-copied snapshot, which would carry no
  * limits and one wire for every id.
@@ -29,8 +29,7 @@ import type { ModelDefinition } from "../../provider-model-definition";
 import { isRecord } from "../../../protocol/codecs";
 import { boundedUpstreamNumber, sanitizeUpstreamLabel } from "../../provider-sanitize";
 import type { ProviderModelDiscovery } from "../../discovery/discovery-types";
-import { defineModel } from "../../provider-model-definition";
-import { COMMANDCODE_GENERATE_PATH, COMMANDCODE_PROVIDER_ID } from "./commandcode";
+import { COMMANDCODE_GENERATE_PATH, COMMANDCODE_PROVIDER_ID, defineCommandCodeModel } from "./commandcode";
 
 /** The Provider API's OpenAI-shaped model listing. */
 export const COMMANDCODE_MODELS_PATH = "/models" as const;
@@ -96,7 +95,7 @@ export const discoverCommandCodeModels: ProviderModelDiscovery = async (
       );
       byId.set(
         id,
-        defineModel({
+        defineCommandCodeModel({
           id,
           providerId: COMMANDCODE_PROVIDER_ID,
           wireFamily,

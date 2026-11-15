@@ -136,6 +136,8 @@ test("ZCode Start Plan registry dispatch preserves caller instructions and model
   const call = calls[0];
   expect(call?.url).toBe("https://zcode.z.ai/api/v1/zcode-plan/anthropic/v1/messages");
   expect(call?.headers.get("authorization")).toBe(`Bearer ${jwt("fixture-user")}`);
+  expect(call?.headers.get("x-zcode-app-version")).toBe("3.14.5");
+  expect(call?.headers.get("user-agent")).toBe("ZCode/3.14.5 ai-sdk/anthropic/3.0.81");
   // The plan-lane identity face mirrored from the desktop client.
   expect(call?.headers.get("anthropic-beta")).toBe("mid-conversation-system-2026-04-07");
   expect(call?.headers.get("x-query-id")).toMatch(/^01a1[0-9a-f]{28}$/);
@@ -149,6 +151,7 @@ test("ZCode Start Plan registry dispatch preserves caller instructions and model
   expect(parsedMeta.account_uuid).toBe("fixture-user");
   expect(parsedMeta.session_id).toBeTruthy();
   const blocks = call?.payload.system as { text: string }[];
+  expect(blocks).toHaveLength(3);
   expect(blocks[2]?.text).toContain("fixture user instructions");
 });
 
@@ -174,6 +177,17 @@ test("ZCode Start Plan rejects HTTP 200 business errors instead of completing em
 });
 
 describe("ZCode Start Plan quota eligibility through registry", () => {
+  test("billing uses its app identity in both the URL and headers", async () => {
+    const collector = await createDefaultProviderRegistry().resolveQuotaCollector(ID);
+    if (!collector) throw new Error("Missing Start Plan collector");
+    const quota = await collector("fixture-token", Object.assign(async (url: string | URL | Request, init?: RequestInit) => {
+      expect(new URL(String(url)).searchParams.get("app_version")).toBe("3.17.2");
+      expect(new Headers(init?.headers).get("x-zcode-app-version")).toBe("3.17.2");
+      return Response.json({ code: 0, data: { plans: [], balances: [] } });
+    }, { preconnect() {} }));
+    expect(quota.error).toBeNull();
+  });
+
   test("a spent model leaves sibling and the separate Coding Plan available", async () => withFrozenTime(NOW, async () => {
     const quota = await collect([bucket("glm-5.3", 0), bucket("glm-5.3-flash", 75)]);
     // Quota is deliberately not an eligibility exclusion: all accounts remain

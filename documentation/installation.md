@@ -137,10 +137,14 @@ prerequisites.
 Lite stores embedded SQLite at `<CARTETHYIA_DATA_DIR>/cartethyia.sqlite` and
 uses one process/writer. Full uses PostgreSQL through `DATABASE_URL` and can
 serve multiple instances. Features are otherwise the same. Point `DATABASE_URL`
-at a PgBouncer in transaction mode rather than the PostgreSQL server itself —
-`docker compose --profile full up` starts one tuned for a 1–2 GB VPS (server
-pool capped at 12), and `DATABASE_POOL_MAX` should stay at or below that pool
-size so the app never queues on itself.
+at a PgBouncer in transaction mode rather than the PostgreSQL server itself.
+Set `PGBOUNCER_DB_HOST`, `PGBOUNCER_DB_USER`, and `PGBOUNCER_DB_PASSWORD`, then
+include the optional overlay explicitly:
+`docker compose -f docker-compose.yml -f docker-compose.pgbouncer.yml --profile full up`.
+Point the app's `DATABASE_URL` at `pgbouncer:6432` with those same credentials.
+The pooler is tuned for a 1–2 GB VPS (server pool capped at 12);
+`DATABASE_POOL_MAX` should stay at or below that pool size. Ordinary Compose
+commands do not load the overlay or require its credentials.
 
 `CARTETHYIA_DB_MODE` is required and has no implicit default. The gateway
 refuses to boot without it rather than guessing which database and migration

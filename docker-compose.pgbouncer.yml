@@ -1,0 +1,29 @@
+# Optional Full-mode pooler. Include explicitly so default Compose runs do not
+# interpolate or require PgBouncer credentials.
+services:
+  pgbouncer:
+    image: edoburu/pgbouncer:v1.24.1-p0
+    profiles: ["full"]
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:6432:6432"
+    environment:
+      DB_HOST: ${PGBOUNCER_DB_HOST:?set PGBOUNCER_DB_HOST in .env to your PostgreSQL host}
+      DB_PORT: ${PGBOUNCER_DB_PORT:-5432}
+      DB_NAME: ${PGBOUNCER_DB_NAME:-cartethyia}
+      DB_USER: ${PGBOUNCER_DB_USER:?set PGBOUNCER_DB_USER in .env to the PostgreSQL role}
+      DB_PASSWORD: ${PGBOUNCER_DB_PASSWORD:?set PGBOUNCER_DB_PASSWORD in .env}
+      LISTEN_PORT: "6432"
+      POOL_MODE: transaction
+      AUTH_TYPE: scram-sha-256
+      MAX_CLIENT_CONN: "200"
+      DEFAULT_POOL_SIZE: "12"
+      MIN_POOL_SIZE: "2"
+      RESERVE_POOL_SIZE: "5"
+    healthcheck:
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-p", "6432"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - cartethyia

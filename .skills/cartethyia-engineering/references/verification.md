@@ -26,6 +26,11 @@ The repository carries an active test suite (`test/`, `dashboard/test/`, run via
 `CARTETHYIA_TEST_DATABASE_URL` configured in the local `.env` or shell; they
 never fall back to the development database.
 
+When the local environment is configured for deployment, run source tests with
+`NODE_ENV=test CARTETHYIA_SOURCE_RUN=1`. Override `REDIS_URL` as well as
+`CARTETHYIA_TEST_REDIS_URL` to the disposable Redis endpoint; the test-only
+variable does not redirect production modules that read `REDIS_URL`.
+
 Typecheck proves code shape, not behavior. Run the affected scope alongside the
 gates, and exercise the real boundary: a UI surface through the `agent-browser`
 CLI (mandatory for dashboard work — follow `cartethyia-dashboard/SKILL.md`;

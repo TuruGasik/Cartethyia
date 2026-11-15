@@ -64,6 +64,25 @@ describe("commandCodeWireFor", () => {
 });
 
 describe("commandcode discovery", () => {
+  test("metadata preserves smaller output limits and bounds larger model budgets", async () => {
+    const discovered = await discoverCommandCodeModels({
+      baseUrl: "https://api.commandcode.ai/provider/v1",
+      credential: "token",
+      fetcher: (async () => Response.json({ data: [
+        { id: "deepseek/deepseek-v4.1-flash", context_length: 1_000_000 },
+        { id: "claude-haiku-4-5-20251001", context_length: 200_000 },
+        { id: "deepseek/deepseek-v4-pro", context_length: 16_000 },
+      ] })) as unknown as typeof fetch,
+    });
+    const byId = new Map(discovered?.map(model => [model.modelId, model]));
+    expect(byId.get("deepseek/deepseek-v4.1-flash")?.outputLimit).toBe(200_000);
+    expect(byId.get("deepseek/deepseek-v4.1-flash")?.contextLimit).toBe(1_000_000);
+    expect(byId.get("claude-haiku-4-5-20251001")?.outputLimit).toBe(64_000);
+    expect(byId.get("deepseek/deepseek-v4-pro")?.outputLimit).toBe(16_000);
+    expect(COMMANDCODE_MODELS.find(model => model.modelId === "deepseek/deepseek-v4.1-flash")?.outputLimit).toBe(200_000);
+  });
+
+
   test("each row carries the wire that serves it", async () => {
     const models = await discoverCommandCodeModels({
       baseUrl: "https://api.commandcode.ai/provider/v1",
@@ -129,6 +148,22 @@ describe("commandcode discovery", () => {
 });
 
 describe("commandcode static catalog", () => {
+  test("every bundled output budget respects the transport ceiling", () => {
+    for (const model of COMMANDCODE_MODELS) {
+      expect(model.outputLimit).toBeGreaterThan(0);
+      expect(model.outputLimit).toBeLessThanOrEqual(200_000);
+    }
+  });
+
+  test("the refreshed roster adds current models and drops retired ids", () => {
+    const ids = new Set(COMMANDCODE_MODELS.map(model => model.modelId));
+    expect(ids.has("claude-fable-5-2")).toBe(true);
+    expect(ids.has("gpt-6.1-terra")).toBe(true);
+    expect(ids.has("minimax/minimax-m3.1-flash")).toBe(true);
+    expect(ids.has("minimax/minimax-m3.1-flash-preview")).toBe(false);
+    expect(ids.has("reflection/beam:free")).toBe(false);
+  });
+
   test("the roster carries all three wires", () => {
     const families = new Set(COMMANDCODE_MODELS.map((m) => m.wireFamily));
     expect(families.has("messages")).toBe(true);

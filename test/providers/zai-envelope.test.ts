@@ -67,6 +67,7 @@ describe("zaiDeviceMid / zaiAppHeaders", () => {
   });
 
   test("app headers carry the bearer, device id, and pinned app identity", () => {
+    expect(ZAI_APP_VERSION).toBe("3.17.2");
     const headers = zaiAppHeaders("secret-token", "account-1");
     expect(headers["authorization"]).toBe("Bearer secret-token");
     expect(headers["x-device-mid"]).toBe(zaiDeviceMid("account-1"));

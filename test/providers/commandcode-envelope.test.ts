@@ -128,6 +128,41 @@ describe("commandcode identity headers", () => {
 });
 
 describe("commandcode Go-plan dispatch", () => {
+  test.each([
+    ["max_output_tokens", 393_216, 200_000],
+    ["max_tokens", 200_001, 200_000],
+    ["max_completion_tokens", 200_000, 200_000],
+    ["max_output_tokens", 199_999, 199_999],
+    ["max_output_tokens", 256, 256],
+  ] as const)("bounds %s=%i to the generate endpoint ceiling", async (field, requested, expected) => {
+    let sentMaxTokens: unknown;
+    const adapter = createCommandCodeAdapter({
+      fetch: (async (_input: RequestInfo | URL, init?: RequestInit) => {
+        const body = JSON.parse(String(init?.body)) as { params: { max_tokens: unknown } };
+        sentMaxTokens = body.params.max_tokens;
+        return new Response('{"type":"finish","finishReason":"stop"}\n');
+      }) as typeof fetch,
+    });
+    const target: ProviderDispatchTarget = {
+      provider_id: "commandcode",
+      model_id: "deepseek/deepseek-v4.1-flash",
+      wire_family: "responses",
+      endpoint_path: COMMANDCODE_GENERATE_PATH,
+      output_limit: 393_216,
+      capabilities: {},
+    };
+    const context = {
+      credential: { provider_id: "commandcode", credential_kind: "api_key", secret: new TextEncoder().encode("test-token") },
+      deadline: Date.now() + 60_000,
+      abort_signal: new AbortController().signal,
+    } as ProviderDispatchContext;
+    for await (const _event of adapter.dispatch({ ...REQUEST, generation_controls: { [field]: requested } }, target, context)) {
+      // Drain the stream to exercise the dispatched envelope.
+    }
+    expect(sentMaxTokens).toBe(expected);
+  });
+
+
   function dispatchContext() {
     return {
       credential: {

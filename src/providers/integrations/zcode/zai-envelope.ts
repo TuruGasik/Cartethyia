@@ -16,7 +16,7 @@ import { createHash } from "node:crypto";
 import { asRecord } from "../../../shared/coerce";
 
 /** App version the billing/marketing endpoints expect in headers and query. */
-export const ZAI_APP_VERSION = "3.16.3";
+export const ZAI_APP_VERSION = "3.17.2";
 /** Platform token the same endpoints expect. */
 export const ZAI_PLATFORM = "linux-x64";
 

@@ -280,9 +280,11 @@ The repository ships a `Dockerfile`:
   `cartethyia-data:/app/data`, depends on `redis`, `restart: unless-stopped`.
 - `redis` service: `redis:7.4.2-alpine`, **bound to `127.0.0.1:6379`** on the
   host, with a healthcheck.
-- `pgbouncer` service: opt-in under the `full` profile
-  (`docker compose --profile full up`), transaction mode, server pool capped at
-  12 (`DEFAULT_POOL_SIZE`); without the profile it does not start.
+- `pgbouncer` service: opt-in through `docker-compose.pgbouncer.yml` and its
+  `full` profile (`docker compose -f docker-compose.yml -f docker-compose.pgbouncer.yml --profile full up`),
+  transaction mode, server pool capped at 12 (`DEFAULT_POOL_SIZE`). The
+  explicit overlay requires `PGBOUNCER_DB_HOST`, `PGBOUNCER_DB_USER`, and
+  `PGBOUNCER_DB_PASSWORD`; default Compose does not read these values.
 - PostgreSQL is never bundled; Full mode reaches it via `DATABASE_URL`.
 
 ### Hardening beyond the defaults

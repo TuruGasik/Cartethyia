@@ -161,13 +161,20 @@ describe("Start Plan presentation", () => {
     expect(formatQuotaPlanLabel("ZCODE GLOBAL BUILD, ZCode Start Plan", "zcode-start")).toBe("Start +1");
     expect(formatQuotaPlanLabel("Custom Promo, Other Grant", "zcode-start")).toBe("Custom Promo +1");
     expect(formatQuotaPlanLabel("ZCODE GLOBAL BUILD", "zcode-start")).toBe("Global Build");
+    expect(formatQuotaPlanLabel("ZCode Referral Global", "zcode-start")).toBe("Referral Global");
+    expect(formatQuotaPlanLabel("ZCode Referral Weekend, ZCode Start Plan", "zcode-start")).toBe("Start +1");
     expect(formatQuotaPlanLabel("Go, Team", "commandcode")).toBe("Go, Team");
   });
 
-  test("removes matching model prefixes and preserves unknown grants", () => {
-    expect(formatQuotaWindowLabel("GLM-5.3-Flash · ZCODE GLOBAL BUILD · one-time", "zcode-start", ["glm-5.3-flash"])).toBe("Global Build · One-time");
-    expect(formatQuotaWindowLabel("GLM-5.3-Trial · ZCode Start Plan · daily", "zcode-start", ["glm-5.3"])).toBe("Start · Daily");
-    expect(formatQuotaWindowLabel("GLM-5.3 · Custom PROMO · daily", "zcode-start", ["glm-5.3-flash"])).toBe("GLM-5.3 · Custom PROMO · Daily");
+  test("omits model titles and uses compact grant names with lowercase periods", () => {
+    expect(formatQuotaWindowLabel("GLM-5.3-Flash · ZCODE GLOBAL BUILD · one-time", "zcode-start", ["glm-5.3-flash"])).toBe("Global Build (one-time)");
+    expect(formatQuotaWindowLabel("GLM-5.3-Trial · ZCode Start Plan · daily", "zcode-start", ["glm-5.3"])).toBe("Start (daily)");
+    expect(formatQuotaWindowLabel("GLM-5.3 · ZCode Referral Global · nightly", "zcode-start")).toBe("Referral Global (nightly)");
+    expect(formatQuotaWindowLabel("GLM-5.3 · ZCode Referral Weekend · one-time", "zcode-start")).toBe("Referral Weekend (one-time)");
+    expect(formatQuotaWindowLabel("GLM-5.3 · Custom PROMO · daily", "zcode-start", ["glm-5.3-flash"])).toBe("Custom PROMO (daily)");
+    expect(formatQuotaWindowLabel("Start · daily", "zcode-start")).toBe("Start (daily)");
+    expect(formatQuotaWindowLabel("ZCode Referral Global · not started yet", "zcode-start")).toBe("Referral Global · not started yet");
+    expect(formatQuotaWindowLabel("Custom PROMO", "zcode-start")).toBe("Custom PROMO");
     expect(formatQuotaWindowLabel("GLM-5.3 · Custom PROMO · daily", "commandcode", ["glm-5.3"])).toBe("GLM-5.3 · Custom PROMO · daily");
   });
 });

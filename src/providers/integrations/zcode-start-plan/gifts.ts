@@ -48,12 +48,6 @@ export interface ZcodeGiftResult {
   readonly detail: string | null;
 }
 
-function headers(credential: string, accountId: string): Record<string, string> {
-  // The shared app-identity set is lowercase; the claim POST needs an explicit
-  // JSON content type (the GETs do not send a body).
-  return { ...zaiAppHeaders(credential, accountId), "content-type": "application/json" };
-}
-
 /** The claim actions a marketing delivery offers, and the plan's own name. */
 function bannerClaims(delivery: unknown): { plans: Array<{ planId: string; name: string | null }>; malformed: boolean } {
   const ids: string[] = [];
@@ -91,14 +85,14 @@ async function read(
 ): Promise<{ ok: boolean; data: Record<string, unknown> | null }> {
   let response = await fetcher(url, {
     method: "GET",
-    headers: headers(credential, accountId),
+    headers: zaiAppHeaders(credential, accountId),
     signal: AbortSignal.timeout(TIMEOUT_MS),
   });
   for (let attempt = 1; RETRY_STATUSES.has(response.status) && attempt < RETRY_TRIES; attempt += 1) {
     await sleep(1_500 * attempt);
     response = await fetcher(url, {
       method: "GET",
-      headers: headers(credential, accountId),
+      headers: zaiAppHeaders(credential, accountId),
       signal: AbortSignal.timeout(TIMEOUT_MS),
     });
   }
@@ -195,7 +189,7 @@ async function claimOne(
 ): Promise<"claimed" | "already_claimed" | "captcha" | "failed"> {
   let response = await fetcher(`${BILLING}/claim`, {
     method: "POST",
-    headers: headers(credential, accountId),
+    headers: zaiAppHeaders(credential, accountId),
     body: JSON.stringify({ plan_id: planId }),
     signal: AbortSignal.timeout(TIMEOUT_MS),
   });
@@ -203,7 +197,7 @@ async function claimOne(
     await sleep(1_500 * attempt);
     response = await fetcher(`${BILLING}/claim`, {
       method: "POST",
-      headers: headers(credential, accountId),
+      headers: zaiAppHeaders(credential, accountId),
       body: JSON.stringify({ plan_id: planId }),
       signal: AbortSignal.timeout(TIMEOUT_MS),
     });

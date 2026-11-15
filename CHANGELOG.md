@@ -10,6 +10,19 @@ The format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Commandcode preserves final aggregate usage, SDK cache-read/write and
+  reasoning details, and unknown usage instead of synthesizing zero cache hits.
+  The refreshed bundled roster and discovery share the generation transport's
+  200,000-token ceiling while retaining smaller model limits.
+- Keep ZCode billing/gift identity at 3.17.2 independently of the captured
+  generation prompt/version pair; retain compact grant headings without model
+  captions and with lowercase periods in parentheses.
+- Default Docker Compose commands no longer require optional PgBouncer
+  credentials. The pooler remains explicitly available through
+  `docker-compose.pgbouncer.yml` with its required credentials validated.
+
 ## [2.8.2] - 2026-11-14
 
 ### Fixed

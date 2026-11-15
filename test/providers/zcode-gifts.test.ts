@@ -24,6 +24,21 @@ const preview = (count: number) => ({ code: 0, data: { plans: Array.from({ lengt
 const claim = (fetcher: ValidatedFetch) => claimZcodeGifts({ accountId: "fixture", credential: "dummy-secret", fetcher });
 
 describe("ZCode gift outcomes", () => {
+  test("marketing, preview, and claims share the billing app identity", async () => {
+    const upstream = fixture(emptyFeed, preview(1), [0]);
+    const calls: string[] = [];
+    const fetcher: ValidatedFetch = async (url, init) => {
+      calls.push(String(url));
+      expect(new Headers(init?.headers).get("x-zcode-app-version")).toBe("3.17.2");
+      if (String(url).includes("/preview?")) {
+        expect(new URL(String(url)).searchParams.get("app_version")).toBe("3.17.2");
+      }
+      return upstream.fetcher(url, init);
+    };
+    expect((await claim(fetcher)).state).toBe("claimed");
+    expect(calls).toHaveLength(3);
+  });
+
   test("the documented no-data preview and valid empty feed mean nothing", async () => {
     const upstream = fixture(emptyFeed, emptyPreview);
     expect(await claim(upstream.fetcher)).toEqual({ state: "nothing", claimed: [], detail: null });
